@@ -1,5 +1,9 @@
 # Ghost Pixel Lab
 
+<p align="center">
+  <img src="Media/wireframe_cube.gif" alt="Wireframe cube demo" width="320" height="240">
+</p>
+
 Pocket AMOLED playground for the Waveshare ESP32-S3-Touch-AMOLED-1.8 —
 3D rendering, particle / physics demos, audio experiments. Modern C++.
 
