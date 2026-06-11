@@ -14,6 +14,7 @@
 #include "board/touch.h"
 #include "board/power.h"
 #include "board/rtc.h"
+#include "board/storage.h"
 
 #include "core/app_manager.h"
 #include "core/hw.h"
@@ -25,9 +26,12 @@
 #include "apps/sand.h"
 #include "apps/maze.h"
 #include "apps/level.h"
+#include "apps/music.h"
+#include "apps/wifi_scan.h"
 
 namespace core::hw {
 bool imu = false, touch = false, power = false, rtc = false;
+bool flashFs = false, sd = false;
 }
 
 namespace {
@@ -38,6 +42,8 @@ apps::Piano     pianoApp;
 apps::Sand      sandApp;
 apps::MazeBall  mazeApp;
 apps::Level     levelApp;
+apps::Music     musicApp;
+apps::WifiScan  wifiScanApp;
 }
 
 void setup() {
@@ -53,12 +59,15 @@ void setup() {
     Wire.begin(board::pins::I2C_SDA, board::pins::I2C_SCL, 400000);
     board::expander::begin();
 
-    core::hw::imu   = board::imu::begin();
-    core::hw::touch = board::touch::begin();
-    core::hw::power = board::power::begin();
-    core::hw::rtc   = board::rtc::begin();
-    Serial.printf("[boot] imu=%d touch=%d pmu=%d rtc=%d\n",
-                  core::hw::imu, core::hw::touch, core::hw::power, core::hw::rtc);
+    core::hw::imu     = board::imu::begin();
+    core::hw::touch   = board::touch::begin();
+    core::hw::power   = board::power::begin();
+    core::hw::rtc     = board::rtc::begin();
+    core::hw::flashFs = board::storage::beginFlash();
+    core::hw::sd      = board::storage::beginSD();
+    Serial.printf("[boot] imu=%d touch=%d pmu=%d rtc=%d fs=%d sd=%d\n",
+                  core::hw::imu, core::hw::touch, core::hw::power,
+                  core::hw::rtc, core::hw::flashFs, core::hw::sd);
 
     core::manager::add(cubeApp);
     core::manager::add(sensorLabApp);
@@ -67,6 +76,8 @@ void setup() {
     core::manager::add(sandApp);
     core::manager::add(mazeApp);
     core::manager::add(levelApp);
+    core::manager::add(musicApp);
+    core::manager::add(wifiScanApp);
     core::manager::begin();
 }
 

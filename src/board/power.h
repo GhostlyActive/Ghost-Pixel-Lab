@@ -1,5 +1,5 @@
 // AXP2101 power-management IC on I2C 0x34.
-// Reports battery state and exposes the ALDO/BLDO rails used on this board.
+// Reports battery state, the PWR side key and the ALDO/BLDO rails.
 #pragma once
 
 #include <cstdint>
@@ -7,6 +7,15 @@
 namespace board::power {
 
 bool begin();
+
+// PWR-key presses since the last call (events latch in the PMU's IRQ
+// registers, so polling at a few Hz loses nothing). Long press fires after
+// ~1.5 s while still held; ~6 s is a hardware power-off regardless.
+struct KeyEvents {
+    bool shortPress;
+    bool longPress;
+};
+KeyEvents readKeyEvents();
 
 [[nodiscard]] uint16_t batteryMillivolts();
 [[nodiscard]] float    batteryVolts();

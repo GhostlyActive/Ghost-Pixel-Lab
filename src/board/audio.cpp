@@ -1,6 +1,7 @@
 #include "audio.h"
 #include "i2c.h"
 #include "pins.h"
+#include "config.h"
 
 #include <Arduino.h>
 #include <ESP_I2S.h>
@@ -13,7 +14,7 @@ namespace {
 
 I2SClass i2s;
 bool     ready          = false;
-uint8_t  current_volume = 80;
+uint8_t  current_volume = config::DEFAULT_VOLUME;
 
 void wreg(uint8_t r, uint8_t v) {
     i2c::writeReg(pins::ES8311_ADDR, r, v);
@@ -26,12 +27,15 @@ bool initCodec16k() {
     wreg(0x00, 0x00);
 
     wreg(0x45, 0x00);
-    wreg(0x01, 0x30);                     // clocks on, MCLK from pad
-    wreg(0x02, 0x10);
+    wreg(0x01, 0x30);                     // MCLK/BCLK on, MCLK from pad
+    // Clock chain for MCLK = 256*fs (ESP_I2S default: 4.096 MHz at 16 kHz):
+    // prediv 1, premult x1. The previous value 0x10 (premult x4) assumed a
+    // 64*fs MCLK and ran ADC+DAC 4x off the bus clock -> silence both ways.
+    wreg(0x02, 0x00);
     wreg(0x03, 0x10); wreg(0x16, 0x24);   // ADC osr
     wreg(0x04, 0x10); wreg(0x05, 0x00);   // DAC osr, dividers
-    wreg(0x06, 0x03);
-    wreg(0x07, 0x00); wreg(0x08, 0xFF);   // LRCK divider
+    wreg(0x06, 0x03);                     // BCLK div 4 (= 64*fs)
+    wreg(0x07, 0x00); wreg(0x08, 0xFF);   // LRCK divider 256
     wreg(0x09, 0x0C); wreg(0x0A, 0x0C);   // I2S in/out 16-bit
     wreg(0x0B, 0x00); wreg(0x0C, 0x00);
     wreg(0x10, 0x1F); wreg(0x11, 0x7F);
@@ -39,6 +43,7 @@ bool initCodec16k() {
     wreg(0x00, 0x80);                     // power on, slave mode
     delay(20);
 
+    wreg(0x01, 0x3F);                     // + ADC/DAC/analog clocks on
     wreg(0x0D, 0x01);                     // power up analog circuitry
     wreg(0x0E, 0x02);                     // power up DAC/PGA references
     wreg(0x12, 0x00);                     // DAC powered
@@ -63,17 +68,24 @@ bool begin(uint32_t sampleRate) {
     if (!i2c::readReg(pins::ES8311_ADDR, 0xFD, id1) ||
         !i2c::readReg(pins::ES8311_ADDR, 0xFE, id2) ||
         id1 != 0x83 || id2 != 0x11) {
+        Serial.printf("[audio] ES8311 not found (id=%02X %02X)\n", id1, id2);
         return false;
     }
+    Serial.printf("[audio] ES8311 ok (id=%02X %02X)\n", id1, id2);
 
     pinMode(pins::PA_EN, OUTPUT);
     digitalWrite(pins::PA_EN, HIGH);
 
     i2s.setPins(pins::I2S_BCK, pins::I2S_WS, pins::I2S_DO, pins::I2S_DI, pins::I2S_MCK);
+    // LEFT slot only: the ES8311 is mono and talks on the left channel. With
+    // SLOT_BOTH the RX side records both stereo slots (every 2nd sample is
+    // junk), which plays back as ring-modulated "retro beeping".
     if (!i2s.begin(I2S_MODE_STD, sampleRate, I2S_DATA_BIT_WIDTH_16BIT,
-                   I2S_SLOT_MODE_MONO, I2S_STD_SLOT_BOTH)) {
+                   I2S_SLOT_MODE_MONO, I2S_STD_SLOT_LEFT)) {
+        Serial.println("[audio] I2S init failed");
         return false;
     }
+    Serial.println("[audio] I2S up, codec configured");
     if (sampleRate == 16000 && !initCodec16k()) return false;
     setVolume(current_volume);
     ready = true;
@@ -83,9 +95,13 @@ bool begin(uint32_t sampleRate) {
 void setVolume(uint8_t percent) {
     if (percent > 100) percent = 100;
     current_volume = percent;
-    // DAC volume register: 0xBF = 0 dB; above that the codec amplifies
-    // digitally (up to +32 dB) and clips hard. 100 % therefore maps to 0 dB.
-    const uint8_t v = static_cast<uint16_t>(percent) * 0xBF / 100;
+    // DAC volume register counts in 0.5 dB steps: 0x00 = mute, 0xBF = 0 dB,
+    // above that digital gain that clips hard. Map percent onto -33..0 dB,
+    // which tracks perceived loudness far better than a linear register
+    // mapping (30 % linear would be -67 dB = inaudible).
+    const uint8_t v = (percent == 0)
+        ? 0
+        : static_cast<uint8_t>(0xBF - ((100 - percent) * 66) / 100);
     i2c::writeReg(pins::ES8311_ADDR, 0x32, v);
 }
 

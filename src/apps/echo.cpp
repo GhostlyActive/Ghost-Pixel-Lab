@@ -33,7 +33,6 @@ constexpr uint16_t COL_PLAY   = 0x07E0;
 void Echo::onEnter() {
     const bool audioOk = board::audio::begin(SAMPLE_RATE);
     board::audio::setSpeakerEnable(false);  // mic only until playback
-    board::audio::setVolume(30);
 
     if (!buf_) {
         buf_ = static_cast<int16_t*>(heap_caps_malloc(
@@ -65,7 +64,10 @@ void Echo::startRecording() {
 void Echo::startPlayback() {
     board::audio::setSpeakerEnable(true);
     playPos_ = 0;
-    state_   = State::Playing;
+    // Prime the DMA with ~64 ms so frame jitter can't underrun right away.
+    const size_t pre = recLen_ < 1024 ? recLen_ : 1024;
+    playPos_ += board::audio::play(buf_, pre);
+    state_ = State::Playing;
 }
 
 void Echo::stopToIdle() {

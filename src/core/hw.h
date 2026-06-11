@@ -4,9 +4,11 @@
 
 namespace core::hw {
 
-extern bool imu;    // QMI8658
-extern bool touch;  // FT3168
-extern bool power;  // AXP2101
-extern bool rtc;    // PCF85063
+extern bool imu;      // QMI8658
+extern bool touch;    // FT3168
+extern bool power;    // AXP2101
+extern bool rtc;      // PCF85063
+extern bool flashFs;  // LittleFS data partition
+extern bool sd;       // micro-SD card
 
 } // namespace core::hw

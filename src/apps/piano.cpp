@@ -56,7 +56,6 @@ const char* noteName(int n)  { return n >= 8 ? BLACK_N[n - 8] : WHITE_N[n]; }
 
 void Piano::onEnter() {
     audioOk_ = board::audio::begin(SAMPLE_RATE);
-    board::audio::setVolume(30);
     board::audio::setSpeakerEnable(true);
     note_  = -1;
     env_   = 0;
@@ -78,6 +77,10 @@ void Piano::update(const core::Input& in, float dt) {
 
     const bool held = note_ >= 0;
     if (n == 0 || (!held && env_ < 0.0005f)) return;  // idle: DMA auto-clears
+
+    // Note start: prime the DMA with ~50 ms extra so frame jitter can't
+    // underrun (the dt-paced steady state keeps that cushion).
+    if (held && env_ < 0.0005f && n < 800) n = 800;
 
     // Per-sample one-pole envelope: ~5 ms attack, ~25 ms release (no clicks).
     static int16_t buf[CHUNK_MAX];

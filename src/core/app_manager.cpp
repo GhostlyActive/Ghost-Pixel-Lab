@@ -1,8 +1,11 @@
 #include "app_manager.h"
 #include "hw.h"
 #include "menu.h"
+#include "sound.h"
+#include "config.h"
 
 #include "board/display.h"
+#include "board/power.h"
 #include "board/touch.h"
 
 #include <Arduino.h>
@@ -11,9 +14,7 @@ namespace core::manager {
 
 namespace {
 
-constexpr int BOOT_BTN_PIN  = 0;   // BOOT button, active low
-constexpr int EDGE_ZONE_PX  = 40;  // swipe must start this close to the top
-constexpr int SWIPE_DIST_PX = 90;  // ... and travel this far down
+constexpr int BOOT_BTN_PIN = 0;  // BOOT button, active low
 
 App* s_apps[MAX_APPS];
 int  s_count   = 0;
@@ -22,6 +23,8 @@ App* s_current = nullptr;
 Input s_input;
 bool  s_swipeArmed  = false;
 bool  s_bootWasDown = false;
+uint32_t s_pkeyPollMs = 0;
+int      s_brightIdx  = 0;
 
 uint32_t s_lastUs      = 0;
 uint32_t s_frames      = 0;
@@ -33,8 +36,11 @@ FrameStats s_stats{};
 uint32_t   s_lastLogMs = 0;
 
 void sampleInput() {
-    s_input.justPressed  = false;
-    s_input.justReleased = false;
+    s_input.justPressed    = false;
+    s_input.justReleased   = false;
+    s_input.backPressed    = false;
+    s_input.keyPressed     = false;
+    s_input.keyLongPressed = false;
     if (!hw::touch) {
         s_input.pressed = false;
         return;
@@ -56,21 +62,51 @@ void sampleInput() {
     }
 }
 
-// Top-edge swipe-down or a BOOT-button press returns to the menu.
-void pollHomeControls() {
-    if (s_current == &menu::instance()) return;
+void cycleBrightness() {
+    constexpr int N = sizeof(config::BRIGHTNESS_STEPS);
+    s_brightIdx = (s_brightIdx + 1) % N;
+    board::display::setBrightness(config::BRIGHTNESS_STEPS[s_brightIdx]);
+}
 
-    if (s_input.justPressed) s_swipeArmed = s_input.startY < EDGE_ZONE_PX;
-    if (!s_input.pressed) s_swipeArmed = false;
-    if (s_swipeArmed && s_input.y - s_input.startY > SWIPE_DIST_PX) {
-        s_swipeArmed = false;
-        goHome();
-        return;
+// System buttons: top-edge swipe + BOOT key go home (unless captured), the
+// PWR key cycles brightness (unless captured) and is reported to the app.
+void pollButtons() {
+    App* app = s_current;
+    const bool inMenu = app == &menu::instance();
+
+    if (config::SWIPE_HOME && !inMenu) {
+        if (s_input.justPressed) s_swipeArmed = s_input.startY < config::SWIPE_EDGE_PX;
+        if (!s_input.pressed) s_swipeArmed = false;
+        if (s_swipeArmed && s_input.y - s_input.startY > config::SWIPE_DIST_PX) {
+            s_swipeArmed = false;
+            goHome();
+            return;
+        }
     }
 
     const bool down = digitalRead(BOOT_BTN_PIN) == LOW;
-    if (s_bootWasDown && !down) goHome();
+    if (s_bootWasDown && !down) {
+        if (app->capturesBackButton())              s_input.backPressed = true;
+        else if (config::BOOT_BUTTON_HOME && !inMenu) goHome();
+    }
     s_bootWasDown = down;
+
+    // PWR key events latch in the PMU, so 10 Hz polling loses nothing and
+    // keeps the per-frame I2C budget flat.
+    if (hw::power) {
+        const uint32_t now = millis();
+        if (now - s_pkeyPollMs >= 100) {
+            s_pkeyPollMs = now;
+            const auto ev = board::power::readKeyEvents();
+            if (ev.shortPress) {
+                s_input.keyPressed = true;
+                if (config::PWR_KEY_BRIGHTNESS && !app->capturesPowerKey()) {
+                    cycleBrightness();
+                }
+            }
+            if (ev.longPress) s_input.keyLongPressed = true;
+        }
+    }
 }
 
 } // namespace
@@ -93,6 +129,7 @@ void begin() {
 void launch(App& app) {
     if (s_current == &app) return;
     if (s_current) s_current->onExit();
+    sound::stopAll();  // no app inherits the previous app's audio
     s_current = &app;
     s_current->onEnter();
 }
@@ -109,7 +146,7 @@ void tick() {
     if (dt < 0.0f || dt > 0.1f) dt = 0.0f;  // first frame / long stall
 
     sampleInput();
-    pollHomeControls();
+    pollButtons();
 
     // Pin the app for this frame so a launch() inside update() doesn't
     // render a half-initialised successor.
@@ -142,7 +179,7 @@ void tick() {
         s_accUpdateUs = s_accDrawUs = s_accShowUs = 0;
         s_fpsWindowMs = nowMs;
 
-        if (nowMs - s_lastLogMs >= 2000) {
+        if (config::STATS_LOG_MS > 0 && nowMs - s_lastLogMs >= config::STATS_LOG_MS) {
             s_lastLogMs = nowMs;
             Serial.printf("fps=%.1f update=%.1fms draw=%.1fms show=%.1fms\n",
                           s_fps, s_stats.updateMs, s_stats.drawMs, s_stats.showMs);

@@ -13,6 +13,7 @@
 
 #include "font5x7.h"
 #include <Arduino.h>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -27,6 +28,11 @@ struct Surface {
 
     static constexpr uint16_t toPanel(uint16_t color) {
         return __builtin_bswap16(color);
+    }
+
+    // RGB565 from 8-bit channels.
+    static constexpr uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) {
+        return uint16_t(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
     }
 
     [[nodiscard]] bool inBounds(int x, int y) const {
@@ -119,6 +125,36 @@ struct Surface {
             ++y;
             if (err < 0) { err += 2 * y + 1; }
             else         { --x; err += 2 * (y - x) + 1; }
+        }
+    }
+
+    // Copy a w*h RGB565 image (row-major, normal byte order), clipped.
+    void blit(int x, int y, const uint16_t* src, int w, int h) {
+        int sx0 = 0, sy0 = 0;
+        if (x < 0) { sx0 = -x; x = 0; }
+        if (y < 0) { sy0 = -y; y = 0; }
+        const int cw = std::min(w - sx0, width - x);
+        const int ch = std::min(h - sy0, height - y);
+        for (int yy = 0; yy < ch; ++yy) {
+            const uint16_t* sp = src + size_t(sy0 + yy) * w + sx0;
+            uint16_t* dp = &pixels[size_t(y + yy) * width + x];
+            for (int xx = 0; xx < cw; ++xx) dp[xx] = toPanel(sp[xx]);
+        }
+    }
+
+    // Like blit(), but pixels matching `key` are transparent (sprites).
+    void blitKeyed(int x, int y, const uint16_t* src, int w, int h, uint16_t key) {
+        int sx0 = 0, sy0 = 0;
+        if (x < 0) { sx0 = -x; x = 0; }
+        if (y < 0) { sy0 = -y; y = 0; }
+        const int cw = std::min(w - sx0, width - x);
+        const int ch = std::min(h - sy0, height - y);
+        for (int yy = 0; yy < ch; ++yy) {
+            const uint16_t* sp = src + size_t(sy0 + yy) * w + sx0;
+            uint16_t* dp = &pixels[size_t(y + yy) * width + x];
+            for (int xx = 0; xx < cw; ++xx) {
+                if (sp[xx] != key) dp[xx] = toPanel(sp[xx]);
+            }
         }
     }
 
