@@ -20,23 +20,34 @@ void wreg(uint8_t r, uint8_t v) {
 }
 
 bool initCodec16k() {
+    // The chip keeps state across MCU resets — always start from defaults.
+    wreg(0x00, 0x1F);
+    delay(20);
+    wreg(0x00, 0x00);
+
     wreg(0x45, 0x00);
-    wreg(0x01, 0x30);
+    wreg(0x01, 0x30);                     // clocks on, MCLK from pad
     wreg(0x02, 0x10);
-    wreg(0x03, 0x10); wreg(0x16, 0x24);
-    wreg(0x04, 0x10); wreg(0x05, 0x00);
+    wreg(0x03, 0x10); wreg(0x16, 0x24);   // ADC osr
+    wreg(0x04, 0x10); wreg(0x05, 0x00);   // DAC osr, dividers
     wreg(0x06, 0x03);
-    wreg(0x07, 0x00); wreg(0x08, 0xFF);
-    wreg(0x09, 0x0C); wreg(0x0A, 0x0C);
+    wreg(0x07, 0x00); wreg(0x08, 0xFF);   // LRCK divider
+    wreg(0x09, 0x0C); wreg(0x0A, 0x0C);   // I2S in/out 16-bit
     wreg(0x0B, 0x00); wreg(0x0C, 0x00);
     wreg(0x10, 0x1F); wreg(0x11, 0x7F);
-    wreg(0x00, 0x80);
-    wreg(0x0D, 0x01);
-    wreg(0x12, 0x00);
-    wreg(0x13, 0x10);
-    wreg(0x14, 0x18);
+
+    wreg(0x00, 0x80);                     // power on, slave mode
+    delay(20);
+
+    wreg(0x0D, 0x01);                     // power up analog circuitry
+    wreg(0x0E, 0x02);                     // power up DAC/PGA references
+    wreg(0x12, 0x00);                     // DAC powered
+    wreg(0x13, 0x10);                     // output stage enabled
+    wreg(0x14, 0x1A);                     // analog mic + PGA gain
     wreg(0x15, 0x40);
+    wreg(0x17, 0xBF);                     // ADC digital volume 0 dB
     wreg(0x1B, 0x0A); wreg(0x1C, 0x6A);
+    wreg(0x31, 0x00);                     // DAC unmuted
     wreg(0x37, 0x08); wreg(0x44, 0x08);
     return true;
 }
@@ -44,6 +55,17 @@ bool initCodec16k() {
 } // namespace
 
 bool begin(uint32_t sampleRate) {
+    if (ready) return true;  // I2S/codec already up; rate stays as configured
+
+    // ES8311 chip ID check: tells "codec missing on I2C" apart from a
+    // wrong register/I2S configuration when debugging silence.
+    uint8_t id1 = 0, id2 = 0;
+    if (!i2c::readReg(pins::ES8311_ADDR, 0xFD, id1) ||
+        !i2c::readReg(pins::ES8311_ADDR, 0xFE, id2) ||
+        id1 != 0x83 || id2 != 0x11) {
+        return false;
+    }
+
     pinMode(pins::PA_EN, OUTPUT);
     digitalWrite(pins::PA_EN, HIGH);
 
@@ -61,7 +83,9 @@ bool begin(uint32_t sampleRate) {
 void setVolume(uint8_t percent) {
     if (percent > 100) percent = 100;
     current_volume = percent;
-    const uint8_t v = static_cast<uint16_t>(percent) * 255 / 100;
+    // DAC volume register: 0xBF = 0 dB; above that the codec amplifies
+    // digitally (up to +32 dB) and clips hard. 100 % therefore maps to 0 dB.
+    const uint8_t v = static_cast<uint16_t>(percent) * 0xBF / 100;
     i2c::writeReg(pins::ES8311_ADDR, 0x32, v);
 }
 

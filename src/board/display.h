@@ -1,9 +1,8 @@
 // SH8601 1.8" AMOLED, 368x448, driven over QSPI.
 //
-// The framebuffer lives in PSRAM and is exposed via a Surface (see
-// board/surface.h) so drawing primitives work on RAM, not on the panel
-// directly. present() pushes the whole buffer to the panel in one DMA
-// transaction.
+// Double-buffered async pipeline: two framebuffers live in PSRAM. The app
+// draws into one via a Surface (see board/surface.h) while a background
+// task streams the other to the panel, so drawing and transfer overlap.
 #pragma once
 
 #include "surface.h"
@@ -14,15 +13,17 @@ namespace board::display {
 inline constexpr int WIDTH  = 368;
 inline constexpr int HEIGHT = 448;
 
-// Initialise the QSPI bus, the SH8601 panel and the PSRAM framebuffer.
-// 80 MHz is the panel's rated maximum and works reliably on this board.
+// Initialise the QSPI bus, the SH8601 panel, both PSRAM framebuffers and
+// the presenter task. 80 MHz is the panel's rated maximum.
 bool begin(uint32_t pclk_hz = 80'000'000);
 
-// Drawing surface backed by the framebuffer. Cheap value type, grab it once
-// per frame and use it freely.
+// Drawing surface for the current frame. The buffers alternate, so the
+// returned buffer holds the frame from TWO frames ago — redraw everything
+// each frame (a clear() first does the job).
 gfx::Surface canvas();
 
-// Push the framebuffer to the panel. Blocks until the SPI transaction is queued.
+// Flip: hand the drawn buffer to the presenter task and return. Blocks only
+// until the PREVIOUS frame's transfer has finished, not the current one's.
 void present();
 
 // SH8601 brightness, 0..255.

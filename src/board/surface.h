@@ -3,11 +3,18 @@
 //
 // All functions clip against (0..w, 0..h). 32-bit writes are used for
 // horizontal spans and full clears because PSRAM is wide-bus friendly.
+//
+// Storage is big-endian RGB565 (the panel's wire format): every primitive
+// byte-swaps its color argument once on entry, so present() can stream the
+// buffer to the panel as-is instead of swapping all 330 KB each frame.
+// API colors stay ordinary RGB565 — only poke pixels[] directly if you
+// remember the swap.
 #pragma once
 
 #include "font5x7.h"
 #include <Arduino.h>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <cmath>
 
@@ -18,16 +25,25 @@ struct Surface {
     int       width;
     int       height;
 
+    static constexpr uint16_t toPanel(uint16_t color) {
+        return __builtin_bswap16(color);
+    }
+
     [[nodiscard]] bool inBounds(int x, int y) const {
         return (unsigned)x < (unsigned)width && (unsigned)y < (unsigned)height;
     }
 
     void px(int x, int y, uint16_t color) {
-        if (inBounds(x, y)) pixels[y * width + x] = color;
+        if (inBounds(x, y)) pixels[y * width + x] = toPanel(color);
     }
 
     void clear(uint16_t color) {
-        const uint32_t v = uint32_t(color) | (uint32_t(color) << 16);
+        const uint16_t c = toPanel(color);
+        if ((c >> 8) == (c & 0xFF)) {  // black, white, ...: memset is fastest
+            memset(pixels, c & 0xFF, size_t(width) * height * 2);
+            return;
+        }
+        const uint32_t v = uint32_t(c) | (uint32_t(c) << 16);
         auto* p32 = reinterpret_cast<uint32_t*>(pixels);
         const int n = (width * height) / 2;
         for (int i = 0; i < n; ++i) p32[i] = v;
@@ -39,14 +55,24 @@ struct Surface {
         if (x + w > width)  w = width  - x;
         if (y + h > height) h = height - y;
         if (w <= 0 || h <= 0) return;
+        const uint16_t c  = toPanel(color);
+        const uint32_t cc = uint32_t(c) | (uint32_t(c) << 16);
         for (int yy = 0; yy < h; ++yy) {
-            uint16_t* row = &pixels[(y + yy) * width + x];
-            for (int xx = 0; xx < w; ++xx) row[xx] = color;
+            uint16_t* p = &pixels[(y + yy) * width + x];
+            int n = w;
+            if (reinterpret_cast<uintptr_t>(p) & 3) { *p++ = c; --n; }
+            auto* p32 = reinterpret_cast<uint32_t*>(p);
+            for (; n >= 2; n -= 2) *p32++ = cc;
+            if (n) *reinterpret_cast<uint16_t*>(p32) = c;
         }
     }
 
     void hLine(int x, int y, int w, uint16_t color) {
         fillRect(x, y, w, 1, color);
+    }
+
+    void vLine(int x, int y, int h, uint16_t color) {
+        fillRect(x, y, 1, h, color);
     }
 
     // Bresenham line.
@@ -82,10 +108,48 @@ struct Surface {
         }
     }
 
+    // Midpoint circle outline, 1 px wide.
+    void circle(int cx, int cy, int r, uint16_t color) {
+        int x = r, y = 0, err = 1 - r;
+        while (x >= y) {
+            px(cx + x, cy + y, color); px(cx - x, cy + y, color);
+            px(cx + x, cy - y, color); px(cx - x, cy - y, color);
+            px(cx + y, cy + x, color); px(cx - y, cy + x, color);
+            px(cx + y, cy - x, color); px(cx - y, cy - x, color);
+            ++y;
+            if (err < 0) { err += 2 * y + 1; }
+            else         { --x; err += 2 * (y - x) + 1; }
+        }
+    }
+
     // Render one ASCII character (printable range only).
     void glyph(int x, int y, char c, uint16_t color, int scale = 1) {
         if (c < 0x20 || c > 0x7E) return;
         const auto& g = font::glyphs[c - 0x20];
+
+        // Fast path for fully visible glyphs: direct span writes, no
+        // per-pixel clipping or call overhead. Text is the bulk of most
+        // frames, so this is worth the duplication.
+        if (x >= 0 && y >= 0 &&
+            x + font::CHAR_W * scale <= width &&
+            y + font::CHAR_H * scale <= height) {
+            const uint16_t pc = toPanel(color);
+            uint16_t* row0 = &pixels[y * width + x];
+            for (int row = 0; row < font::CHAR_H; ++row) {
+                for (int sy = 0; sy < scale; ++sy) {
+                    uint16_t* p = row0;
+                    for (int col = 0; col < font::CHAR_W; ++col, p += scale) {
+                        if (g[col] & (1u << row)) {
+                            for (int sx = 0; sx < scale; ++sx) p[sx] = pc;
+                        }
+                    }
+                    row0 += width;
+                }
+            }
+            return;
+        }
+
+        // Clipped path for glyphs touching an edge.
         for (int col = 0; col < font::CHAR_W; ++col) {
             const uint8_t bits = g[col];
             for (int row = 0; row < font::CHAR_H; ++row) {
@@ -101,9 +165,12 @@ struct Surface {
     }
 
     void text(int x, int y, const char* s, uint16_t color, int scale = 1) {
-        const int step = font::advance(scale);
+        const int step    = font::advance(scale);
+        const int glyphPx = font::CHAR_W * scale;
         while (*s) {
-            glyph(x, y, *s++, color, scale);
+            if (x >= width) break;             // rest is off-screen
+            if (x + glyphPx > 0) glyph(x, y, *s, color, scale);
+            ++s;
             x += step;
         }
     }
