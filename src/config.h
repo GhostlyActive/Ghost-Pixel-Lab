@@ -27,6 +27,9 @@ inline constexpr uint8_t BRIGHTNESS_STEPS[]  = {255, 140, 50};
 // --- Audio -------------------------------------------------------------------
 inline constexpr uint8_t DEFAULT_VOLUME = 30;  // master volume at boot, 0..100
 
+// --- Gamepad -------------------------------------------------------------------
+inline constexpr float PAD_DEADZONE = 0.10f;  // stick deadzone, 0..1
+
 // --- Diagnostics ---------------------------------------------------------------
 inline constexpr uint32_t STATS_LOG_MS = 2000;  // serial fps/frame log; 0 = off
 

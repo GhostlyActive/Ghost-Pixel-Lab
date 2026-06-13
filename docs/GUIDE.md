@@ -13,6 +13,7 @@ in the [README](../README.md); this is the long one.
   - [Touch patterns](#touch-patterns)
   - [Hardware buttons](#hardware-buttons)
   - [Tilt / IMU](#tilt--imu)
+  - [Gamepad (Xbox controller)](#gamepad-xbox-controller)
   - [Sounds & MP3](#sounds--mp3)
   - [Raw audio (synth & mic)](#raw-audio-synth--mic)
   - [Files & settings](#files--settings)
@@ -125,6 +126,7 @@ top-swipe) comes for free.
 | Display | `board::display` | 368×448 double-buffered, async DMA present, `setBrightness()` |
 | Input | `core::Input` (per frame) | touch press/release edges, position, drag origin; BOOT/PWR key events |
 | Motion | `board::imu` + `apps/tilt.h` | accel/gyro/temperature, screen-mapped gravity vector |
+| Gamepad | `core::pad` | Xbox controller over BLE: sticks, analog triggers, all buttons, battery, rumble |
 | Sound | `core::sound` | non-blocking tones, PCM clips, MP3 (any rate, auto-resampled), master volume — mixed by a background task |
 | Raw audio | `board::audio` | 16 kHz mono PCM streaming out + mic recording in |
 | Storage | `board::storage` | LittleFS (flash assets) + SD card as `fs::FS`; `loadToPsram()` |
@@ -236,6 +238,38 @@ if (board::imu::readGyro(gyro)) { /* deg/s, chip frame */ }
 
 For absolute orientation (complementary filter gyro+accel) see
 `apps/cube3d.cpp`.
+
+### Gamepad (Xbox controller)
+
+`core::pad` connects an Xbox controller over BLE. Supported: Xbox One S
+(model 1708 — update its firmware once via the "Xbox Accessories" app on
+Windows, old firmware is Classic-Bluetooth-only) and all Xbox Series
+controllers. Pairing: hold the controller's pair button until the logo
+blinks fast; reconnects are automatic, the link survives app switches.
+
+```cpp
+#include "core/pad.h"
+
+void onEnter() override { core::pad::begin(); }   // idempotent
+
+void update(const core::Input&, float dt) override {
+    auto p = core::pad::state();      // thread-safe snapshot
+    if (!p.connected) return;
+
+    x_ += p.lx * 200.0f * dt;         // sticks -1..1, +y = down
+    y_ += p.ly * 200.0f * dt;
+    speed_ = p.rt;                    // analog triggers 0..1
+    if (p.a && !prevA_) jump();       // edge detection is yours
+    prevA_ = p.a;
+
+    if (hitWall) core::pad::rumble(80, 0, 200);   // fire & forget
+}
+```
+
+Buttons: `a b x y`, `lb rb`, `ls rs` (stick clicks), d-pad
+`up down left right`, `menu view xbox share`; plus `battery` (percent).
+Stick deadzone lives in `config::PAD_DEADZONE`. Pad Lab
+(`apps/pad_lab.cpp`) visualizes all of it and is the reference app.
 
 ### Sounds & MP3
 

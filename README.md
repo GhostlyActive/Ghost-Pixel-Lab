@@ -29,7 +29,8 @@ Boots into a touch launcher; every experiment is one small app class.
 Currently on board: **Cube 3D** (IMU wireframe), **Sensor Lab** (hardware
 dashboard), **Echo** (mic → speaker), **Piano** (touch synth), **Sand**
 (falling sand + tilt), **Maze Ball**, **Level** (spirit level), **Music**
-(MP3 from flash & SD), **WiFi Scan**.
+(MP3 from flash & SD), **WiFi Scan**, **Pad Lab** (Xbox controller over BLE,
+incl. rumble).
 
 Tap to launch — BOOT key or a swipe from the top edge goes back, the PWR key
 cycles brightness.

@@ -28,6 +28,7 @@
 #include "apps/level.h"
 #include "apps/music.h"
 #include "apps/wifi_scan.h"
+#include "apps/pad_lab.h"
 
 namespace core::hw {
 bool imu = false, touch = false, power = false, rtc = false;
@@ -44,6 +45,7 @@ apps::MazeBall  mazeApp;
 apps::Level     levelApp;
 apps::Music     musicApp;
 apps::WifiScan  wifiScanApp;
+apps::PadLab    padLabApp;
 }
 
 void setup() {
@@ -78,6 +80,7 @@ void setup() {
     core::manager::add(levelApp);
     core::manager::add(musicApp);
     core::manager::add(wifiScanApp);
+    core::manager::add(padLabApp);
     core::manager::begin();
 }
 
