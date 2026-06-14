@@ -29,6 +29,7 @@
 #include "apps/music.h"
 #include "apps/wifi_scan.h"
 #include "apps/pad_lab.h"
+#include "apps/outer_pixels.h"
 
 namespace core::hw {
 bool imu = false, touch = false, power = false, rtc = false;
@@ -36,16 +37,17 @@ bool flashFs = false, sd = false;
 }
 
 namespace {
-apps::Cube3D    cubeApp;
-apps::SensorLab sensorLabApp;
-apps::Echo      echoApp;
-apps::Piano     pianoApp;
-apps::Sand      sandApp;
-apps::MazeBall  mazeApp;
-apps::Level     levelApp;
-apps::Music     musicApp;
-apps::WifiScan  wifiScanApp;
-apps::PadLab    padLabApp;
+apps::Cube3D        cubeApp;
+apps::SensorLab     sensorLabApp;
+apps::Echo          echoApp;
+apps::Piano         pianoApp;
+apps::Sand          sandApp;
+apps::MazeBall      mazeApp;
+apps::Level         levelApp;
+apps::Music         musicApp;
+apps::WifiScan      wifiScanApp;
+apps::PadLab        padLabApp;
+apps::Outer_Pixels  outerPixelsApp;
 }
 
 void setup() {
@@ -81,6 +83,7 @@ void setup() {
     core::manager::add(musicApp);
     core::manager::add(wifiScanApp);
     core::manager::add(padLabApp);
+    core::manager::add(outerPixelsApp);
     core::manager::begin();
 }
 
