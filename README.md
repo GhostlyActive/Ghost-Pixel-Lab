@@ -1,7 +1,12 @@
 # Ghost Pixel Lab
 
 <p align="center">
-  <img src="Media/wireframe_cube.gif" alt="Wireframe cube demo" width="320" height="240">
+  <img src="Media/outer_pixel_video.gif" alt="Outer Pixel Demo" width="400" height="225">
+</p>
+
+<p align="center">
+  <img src="Media/outer_pixel_1.jpeg" alt="Outer Pixel Screenshot 1" width="320">
+  <img src="Media/outer_pixel_2.jpeg" alt="Outer Pixel Screenshot 2" width="320">
 </p>
 
 Pocket AMOLED playground for the Waveshare ESP32-S3-Touch-AMOLED-1.8: a tiny
