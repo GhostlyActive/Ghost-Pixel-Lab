@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <img src="Media/outer_pixel_1.jpeg" alt="Outer Pixel Screenshot 1" width="320">
-  <img src="Media/outer_pixel_2.jpeg" alt="Outer Pixel Screenshot 2" width="320">
+  <img src="Media/outer_pixel_1.jpg" alt="Outer Pixel Screenshot 1" width="320">
+  <img src="Media/outer_pixel_2.jpg" alt="Outer Pixel Screenshot 2" width="320">
 </p>
 
 Pocket AMOLED playground for the Waveshare ESP32-S3-Touch-AMOLED-1.8: a tiny
