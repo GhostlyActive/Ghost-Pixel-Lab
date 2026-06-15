@@ -3,9 +3,12 @@
 <div align="center">
   <table>
     <tr>
-      <td><img src="Media/outer_pixel_video.gif" alt="Outer Pixels demo" width="300"></td>
-      <td><img src="Media/outer_pixel_1.jpg" alt="Outer Pixels — space" width="175"></td>
-      <td><img src="Media/outer_pixel_2.jpg" alt="Outer Pixels — surface" width="175"></td>
+      <td><img src="Media/outer_pixel_video.gif"   alt="Outer Pixels — space"   width="290"></td>
+      <td><img src="Media/outer_pixel_video_2.gif" alt="Outer Pixels — surface" width="290"></td>
+    </tr>
+    <tr>
+      <td><img src="Media/outer_pixel_1.jpg" alt="Outer Pixels screenshot 1" width="290"></td>
+      <td><img src="Media/outer_pixel_2.jpg" alt="Outer Pixels screenshot 2" width="290"></td>
     </tr>
   </table>
 </div>
@@ -41,6 +44,13 @@ controller over BLE, incl. rumble).
 
 Tap to launch — BOOT key or a swipe from the top edge goes back, the PWR key
 cycles brightness.
+
+## Outer Pixels
+
+The headline app: an Outer-Wilds-style space sim (no 3D engine). Fly a 6-DOF
+ship between orbiting planets with the Xbox pad; drop low and it switches to a
+Comanche-style **voxel terrain** you fly through — procedural, generated in the
+background so it's seamless.
 
 ## Build & flash
 
