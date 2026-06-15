@@ -42,6 +42,22 @@ private:
     float starX_[80], starY_[80], starZ_[80];
     uint32_t rng_ = 0xBEEF77;
     uint32_t rnd() { rng_ ^= rng_ << 13; rng_ ^= rng_ >> 17; rng_ ^= rng_ << 5; return rng_; }
+
+    // --- surface (voxel heightmap) mode ---
+    // When you drop low over a planet the view switches to a Comanche-style
+    // voxel terrain you fly through (procedural mountains). All of it lives in
+    // this app, grouped in one clearly marked section of outer_pixels.cpp.
+    int       surface_ = -1;            // planet index in surface mode, -1 = space
+    float     sx_ = 0, sy_ = 0;         // voxel camera position on the terrain
+    float     salt_ = 0;                // altitude above the terrain plane
+    float     syaw_ = 0, spitch_ = 0;   // heading / nose angle
+    uint8_t*  hmap_ = nullptr;          // procedural heightmap tile (PSRAM)
+    uint16_t* cmap_ = nullptr;          // matching color tile (PSRAM)
+
+    void enterSurface(int planet);
+    void exitSurface();
+    void updateSurface(const core::Input& in, float dt);
+    void renderSurface(board::gfx::Surface& s);
 };
 
 } // namespace apps

@@ -1,13 +1,14 @@
 # Ghost Pixel Lab
 
-<p align="center">
-  <img src="Media/outer_pixel_video.gif" alt="Outer Pixel Demo" width="400" height="225">
-</p>
-
-<p align="center">
-  <img src="Media/outer_pixel_1.jpg" alt="Outer Pixel Screenshot 1" width="320">
-  <img src="Media/outer_pixel_2.jpg" alt="Outer Pixel Screenshot 2" width="320">
-</p>
+<div align="center">
+  <table>
+    <tr>
+      <td><img src="Media/outer_pixel_video.gif" alt="Outer Pixels demo" width="300"></td>
+      <td><img src="Media/outer_pixel_1.jpg" alt="Outer Pixels — space" width="175"></td>
+      <td><img src="Media/outer_pixel_2.jpg" alt="Outer Pixels — surface" width="175"></td>
+    </tr>
+  </table>
+</div>
 
 Pocket AMOLED playground for the Waveshare ESP32-S3-Touch-AMOLED-1.8: a tiny
 app engine (touch launcher, double-buffered DMA renderer, sound mixer with
@@ -31,11 +32,12 @@ Product page: <https://www.waveshare.com/esp32-s3-touch-amoled-1.8.htm>
 ## Apps
 
 Boots into a touch launcher; every experiment is one small app class.
-Currently on board: **Cube 3D** (IMU wireframe), **Sensor Lab** (hardware
-dashboard), **Echo** (mic → speaker), **Piano** (touch synth), **Sand**
-(falling sand + tilt), **Maze Ball**, **Level** (spirit level), **Music**
-(MP3 from flash & SD), **WiFi Scan**, **Pad Lab** (Xbox controller over BLE,
-incl. rumble).
+Currently on board: **Outer Pixels** (Outer-Wilds-style space sim — fly between
+orbiting planets and drop onto a voxel surface), **Cube 3D** (IMU wireframe),
+**Sensor Lab** (hardware dashboard), **Echo** (mic → speaker), **Piano** (touch
+synth), **Sand** (falling sand + tilt), **Maze Ball**, **Level** (spirit
+level), **Music** (MP3 from flash & SD), **WiFi Scan**, **Pad Lab** (Xbox
+controller over BLE, incl. rumble).
 
 Tap to launch — BOOT key or a swipe from the top edge goes back, the PWR key
 cycles brightness.

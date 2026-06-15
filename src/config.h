@@ -31,6 +31,6 @@ inline constexpr uint8_t DEFAULT_VOLUME = 30;  // master volume at boot, 0..100
 inline constexpr float PAD_DEADZONE = 0.10f;  // stick deadzone, 0..1
 
 // --- Diagnostics ---------------------------------------------------------------
-inline constexpr uint32_t STATS_LOG_MS = 2000;  // serial fps/frame log; 0 = off
+inline constexpr uint32_t STATS_LOG_MS = 0;  // serial fps/frame log; 0 = off
 
 } // namespace config

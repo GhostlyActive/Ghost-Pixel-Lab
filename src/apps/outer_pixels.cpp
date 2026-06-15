@@ -4,6 +4,7 @@
 #include "board/display.h"
 
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <cmath>
 #include <cstdio>
 
@@ -43,12 +44,12 @@ struct Planet {
 // distinct orbR (and ideally a different inc/phase) so it has its own lane.
 // radius = how big it looks; gm = how hard it pulls (roughly scale with size).
 Planet PLANETS[] = {
-    {0,0,0,  78, 9000, 0xFE60, 0xFCA0, true,  "Sol",     0,   0,      0,    0,    0   },
-    {0,0,0,  14, 2200, 0x5BDF, 0x6D7F, false, "Aqua",    190, 0.100f, 0.15f, 0.0f, 0.0f},
-    {0,0,0,  32, 6500, 0xFD20, 0xFCC8, false, "Rust",    300, 0.055f, 0.40f, 1.2f, 1.0f}, // gas giant
-    {0,0,0,   8, 1100, 0x9FF3, 0xAEF7, false, "Mint",    240, 0.085f, 0.25f, 2.4f, 2.0f}, // moonlet
-    {0,0,0,  20, 3600, 0xF81F, 0xFC9F, false, "Magenta", 430, 0.045f, 0.55f, 3.5f, 0.5f},
-    {0,0,0,  11, 1600, 0x07E0, 0x8FEA, false, "Vil",     360, 0.070f, 0.30f, 5.0f, 3.0f},
+    {0,0,0,  78, 9000, 0xFE60, 0xFCA0, true,  "Helion",     0,   0,      0,    0,    0   },
+    {0,0,0,  14, 2200, 0x5BDF, 0x6D7F, false, "Sylara",     190, 0.100f, 0.15f, 0.0f, 0.0f},
+    {0,0,0,  32, 6500, 0xFD20, 0xFCC8, false, "Brontes",    300, 0.055f, 0.40f, 1.2f, 1.0f}, 
+    {0,0,0,   8, 1100, 0x9FF3, 0xAEF7, false, "Ione",     240, 0.085f, 0.25f, 2.4f, 2.0f},
+    {0,0,0,  20, 3600, 0xF81F, 0xFC9F, false, "Astrea",     430, 0.045f, 0.55f, 3.5f, 0.5f},
+    {0,0,0,  11, 1600, 0x07E0, 0x8FEA, false, "Caelum",     360, 0.070f, 0.30f, 5.0f, 3.0f},
 };
 constexpr int N_PLANETS = sizeof(PLANETS) / sizeof(PLANETS[0]);
 constexpr float ATMO_SCALE = 1.6f;
@@ -86,6 +87,64 @@ inline uint16_t blend(uint16_t a, uint16_t b, float f) {
     const int ar = (a >> 11) & 0x1F, ag = (a >> 5) & 0x3F, ab = a & 0x1F;
     const int br = (b >> 11) & 0x1F, bg = (b >> 5) & 0x3F, bb = b & 0x1F;
     return uint16_t(((ar + int((br-ar)*f)) << 11) | ((ag + int((bg-ag)*f)) << 5) | (ab + int((bb-ab)*f)));
+}
+
+// ===== SURFACE (VOXEL HEIGHTMAP) TERRAIN ================================
+// Comanche-style "fake 3D" renderer for the low-altitude planet-surface mode:
+// a procedural heightmap tile + a per-column ray march. Kept inside the app
+// (no separate engine file), grouped in this one clearly marked section.
+
+constexpr int   TILE   = 256, TMASK = 255;  // procedural tile, wraps endlessly
+constexpr float HSCALE = 0.36f;             // stored 0..255 -> world height units
+
+constexpr float SURFACE_ENTER = 16.0f;      // space altitude at which we switch in
+constexpr float SEXIT  = 160.0f;            // climb above this -> back to space
+constexpr float SYAW   = 1.2f;              // surface turn rate
+constexpr float SCLIMB = 70.0f;             // climb / descend rate
+constexpr float SBASE  = 30.0f, SBOOST = 45.0f;       // forward speed (base + throttle)
+constexpr float V_FOV  = 0.9f, V_ZFAR = 340.0f, V_SCALEY = 180.0f;
+constexpr float V_TILT = 40.0f;             // camera look-down (more = look further down)
+
+inline uint32_t thash(int x, int y, uint32_t seed) {
+    uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u + seed * 2246822519u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return h;
+}
+// Tileable value noise (period = power of two in lattice cells).
+inline float vnoise(float x, float y, int period, uint32_t seed) {
+    int x0 = (int)floorf(x), y0 = (int)floorf(y);
+    float fx = x - x0, fy = y - y0;
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+    auto cv = [&](int ix, int iy) {
+        return (thash(ix & (period - 1), iy & (period - 1), seed) & 0xFFFF) / 65535.0f;
+    };
+    float a = cv(x0, y0), b = cv(x0 + 1, y0), c = cv(x0, y0 + 1), d = cv(x0 + 1, y0 + 1);
+    return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+}
+inline uint16_t terrainColor(int h, uint16_t base) {
+    if (h < 28)  return 0x041F;                       // water
+    if (h < 38)  return 0xEF5A;                       // sand
+    if (h < 110) return blend(0x2E68, base, 0.25f);   // grass, tinted per planet
+    if (h < 185) return 0x8410;                       // rock
+    return 0xFFFF;                                     // snow caps
+}
+// Fill a heightmap + colormap tile: low-freq ranges + finer octaves. seed
+// varies the shape, base tints the grass so each planet looks different.
+void genTile(uint8_t* hm, uint16_t* cm, uint32_t seed, uint16_t base) {
+    for (int j = 0; j < TILE; ++j)
+        for (int i = 0; i < TILE; ++i) {
+            const float u = i / (float)TILE, v = j / (float)TILE;
+            const float cont = vnoise(u * 4, v * 4, 4, seed);
+            const float det  = 0.5f  * vnoise(u * 8,  v * 8,  8,  seed)
+                             + 0.3f  * vnoise(u * 16, v * 16, 16, seed)
+                             + 0.15f * vnoise(u * 32, v * 32, 32, seed)
+                             + 0.05f * vnoise(u * 64, v * 64, 64, seed);
+            float e = cont * 0.6f + det * 0.4f;
+            e = e * e;                                 // dramatic peaks, flat plains
+            int h = (int)(e * 255); if (h < 0) h = 0; if (h > 255) h = 255;
+            hm[j * TILE + i] = (uint8_t)h;
+            cm[j * TILE + i] = terrainColor(h, base);
+        }
 }
 
 // Position on a planet's inclined circular orbit at angle a.
@@ -190,11 +249,113 @@ void Outer_Pixels::onEnter() {
     }
 }
 
-void Outer_Pixels::onExit() {}
+void Outer_Pixels::onExit() {
+    free(hmap_); hmap_ = nullptr;
+    free(cmap_); cmap_ = nullptr;
+    surface_ = -1;
+}
+
+void Outer_Pixels::enterSurface(int planet) {
+    if (!hmap_) hmap_ = static_cast<uint8_t*>(heap_caps_malloc(TILE * TILE, MALLOC_CAP_SPIRAM));
+    if (!cmap_) cmap_ = static_cast<uint16_t*>(heap_caps_malloc(TILE * TILE * 2, MALLOC_CAP_SPIRAM));
+    if (!hmap_ || !cmap_) return;        // no PSRAM -> stay in space
+    genTile(hmap_, cmap_, (uint32_t)(planet * 2654435761u), PLANETS[planet].col);
+    surface_ = planet;
+    sx_ = 128; sy_ = 128; salt_ = 75; syaw_ = 0; spitch_ = 0;   // low start: terrain in view
+}
+
+void Outer_Pixels::exitSurface() {
+    const Planet& p = PLANETS[surface_];
+    px_ = p.x; py_ = p.y + p.radius + 70; pz_ = p.z;   // pop out above the planet
+    vx_ = 0; vy_ = 35; vz_ = 0;
+    fwd_[0] = 0; fwd_[1] = 1; fwd_[2] = 0;
+    right_[0] = -1; right_[1] = 0; right_[2] = 0;
+    up_[0] = 0; up_[1] = 0; up_[2] = 1;
+    selected_ = surface_;
+    surface_ = -1;
+}
+
+void Outer_Pixels::updateSurface(const core::Input& in, float dt) {
+    float yawIn = 0, climbIn = 0, throttle = 0;
+    bool exitBtn = false;
+    auto pad = core::pad::state();
+    if (pad.connected) {
+        yawIn = pad.lx;
+        climbIn = pad.ly;                 // stick up = climb, stick down = descend
+        throttle = pad.rt - pad.lt;
+        exitBtn = pad.b;
+    } else if (in.pressed) {
+        yawIn = (in.x - in.startX) / 120.0f;
+        climbIn = (in.startY - in.y) / 120.0f;       // drag up = climb
+    }
+
+    syaw_  += yawIn * SYAW * dt;
+    spitch_ = climbIn > 1 ? 1 : (climbIn < -1 ? -1 : climbIn);   // + = up/climb
+    float spd = SBASE + throttle * SBOOST; if (spd < 6) spd = 6;
+
+    sx_  += sinf(syaw_) * spd * dt;
+    sy_  += cosf(syaw_) * spd * dt;
+    salt_ += spitch_ * SCLIMB * dt;                  // push up = climb, push down = sink
+
+    const int i = ((int)floorf(sx_)) & TMASK, j = ((int)floorf(sy_)) & TMASK;
+    const float hcam = hmap_[j * TILE + i] * HSCALE;
+    if (salt_ < hcam + 4.0f) salt_ = hcam + 4.0f;    // skim, don't sink through
+
+    if (salt_ > SEXIT || exitBtn) exitSurface();
+}
+
+void Outer_Pixels::renderSurface(Surface& s) {
+    const Planet& p = PLANETS[surface_];
+    const uint16_t sky = p.atmo;
+    s.clear(sky);
+
+    static int ybuf[W];
+    for (int x = 0; x < W; ++x) ybuf[x] = H;
+
+    const int   cstep   = salt_ < 70.0f ? 3 : 2;             // adaptive detail
+    const float horizon = H * 0.5f - V_TILT + spitch_ * 160.0f;   // look down by V_TILT
+    const float dirx = sinf(syaw_), diry = cosf(syaw_);
+    const float rdx  = cosf(syaw_), rdy  = -sinf(syaw_);     // right on the map
+
+    float z = 1.0f, dz = 1.0f;
+    while (z < V_ZFAR) {
+        const float half  = z * V_FOV;
+        const float stepx = (2 * rdx * half) / W, stepy = (2 * rdy * half) / W;
+        const float invz  = 1.0f / z;
+        float fog = z / V_ZFAR; if (fog > 1) fog = 1;
+        float px = sx_ + dirx * z - rdx * half;
+        float py = sy_ + diry * z - rdy * half;
+        for (int x = 0; x < W; x += cstep) {
+            const int ix = ((int)floorf(px)) & TMASK, iy = ((int)floorf(py)) & TMASK;
+            const float h = hmap_[iy * TILE + ix] * HSCALE;
+            const int screenY = (int)((salt_ - h) * invz * V_SCALEY + horizon);
+            if (screenY < ybuf[x]) {
+                const uint16_t col = Surface::toPanel(blend(cmap_[iy * TILE + ix], sky, fog * 0.85f));
+                const int top = screenY < 0 ? 0 : screenY;
+                for (int xx = x; xx < x + cstep && xx < W; ++xx) {
+                    if (screenY < ybuf[xx]) {
+                        uint16_t* pp = &s.pixels[top * s.width + xx];
+                        for (int yy = top; yy < ybuf[xx]; ++yy) { *pp = col; pp += s.width; }
+                        ybuf[xx] = top;
+                    }
+                }
+            }
+            px += stepx * cstep; py += stepy * cstep;
+        }
+        z += dz; dz *= 1.02f;
+    }
+
+    char hud[40];
+    snprintf(hud, sizeof(hud), "SURFACE %s  alt %.0f", p.name, salt_);
+    s.text((W - s.textWidth(hud, 2)) / 2, 8, hud, 0xFFFF, 2);
+    s.text(8, H - 16, core::pad::connected() ? "climb to leave   B exit" : "drag to fly",
+           0x8410, 1);
+}
 
 void Outer_Pixels::update(const core::Input& in, float dt) {
     if (dt <= 0) return;
     if (dt > 0.05f) dt = 0.05f;
+    if (surface_ >= 0) { updateSurface(in, dt); return; }
     t_ += dt;
     updatePlanets(t_);
 
@@ -305,9 +466,23 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
         }
         break;
     }
+
+    // Drop low over a planet -> switch into the voxel-terrain surface mode.
+    if (landed_ < 0) {
+        for (int i = 0; i < N_PLANETS; ++i) {
+            if (PLANETS[i].sun) continue;
+            const float dx = PLANETS[i].x - px_, dy = PLANETS[i].y - py_, dz = PLANETS[i].z - pz_;
+            if (sqrtf(dx*dx + dy*dy + dz*dz) - PLANETS[i].radius < SURFACE_ENTER) {
+                enterSurface(i);
+                break;
+            }
+        }
+    }
 }
 
 void Outer_Pixels::render(Surface& s) {
+    if (surface_ >= 0) { renderSurface(s); return; }
+
     const float fx = fwd_[0], fy = fwd_[1], fz = fwd_[2];
     const float rx = right_[0], ry = right_[1], rz = right_[2];
     const float ux = up_[0], uy = up_[1], uz = up_[2];
