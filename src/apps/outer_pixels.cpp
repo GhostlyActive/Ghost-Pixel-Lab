@@ -5,6 +5,8 @@
 
 #include <Arduino.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <cmath>
 #include <cstdio>
 
@@ -98,6 +100,7 @@ constexpr int   TILE   = 256, TMASK = 255;  // procedural tile, wraps endlessly
 constexpr float HSCALE = 0.36f;             // stored 0..255 -> world height units
 
 constexpr float SURFACE_ENTER = 16.0f;      // space altitude at which we switch in
+constexpr float SURFACE_PREP  = 90.0f;      // start building the terrain (background) here
 constexpr float SEXIT  = 160.0f;            // climb above this -> back to space
 constexpr float SYAW   = 1.2f;              // surface turn rate
 constexpr float SCLIMB = 70.0f;             // climb / descend rate
@@ -247,20 +250,40 @@ void Outer_Pixels::onEnter() {
         float l = 1.0f / sqrtf(x * x + y * y + z * z + 1e-3f);
         starX_[i] = x * l; starY_[i] = y * l; starZ_[i] = z * l;
     }
+
+    surface_ = -1;
+    // Allocate the terrain buffers and start the background generator once.
+    if (!hmap_) hmap_ = static_cast<uint8_t*>(heap_caps_malloc(TILE * TILE, MALLOC_CAP_SPIRAM));
+    if (!cmap_) cmap_ = static_cast<uint16_t*>(heap_caps_malloc(TILE * TILE * 2, MALLOC_CAP_SPIRAM));
+    if (!genTask_ && hmap_ && cmap_)
+        xTaskCreatePinnedToCore(&Outer_Pixels::genTaskTramp, "terrain", 4096, this, 2,
+                                reinterpret_cast<TaskHandle_t*>(&genTask_), 0);
 }
 
 void Outer_Pixels::onExit() {
-    free(hmap_); hmap_ = nullptr;
-    free(cmap_); cmap_ = nullptr;
-    surface_ = -1;
+    surface_ = -1;   // keep the terrain tile + generator alive (cache for next time)
+}
+
+// Background task: build the requested planet's terrain into the tile, then
+// park. Runs while you fly in space, so entering the surface never hitches.
+void Outer_Pixels::genTaskTramp(void* self) {
+    static_cast<Outer_Pixels*>(self)->genLoop();
+}
+void Outer_Pixels::genLoop() {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        while (reqPlanet_ != donePlanet_) {
+            const int p = reqPlanet_;
+            if (p < 0 || !hmap_ || !cmap_) break;
+            genTile(hmap_, cmap_, (uint32_t)(p * 2654435761u), PLANETS[p].col);
+            donePlanet_ = p;
+        }
+    }
 }
 
 void Outer_Pixels::enterSurface(int planet) {
-    if (!hmap_) hmap_ = static_cast<uint8_t*>(heap_caps_malloc(TILE * TILE, MALLOC_CAP_SPIRAM));
-    if (!cmap_) cmap_ = static_cast<uint16_t*>(heap_caps_malloc(TILE * TILE * 2, MALLOC_CAP_SPIRAM));
-    if (!hmap_ || !cmap_) return;        // no PSRAM -> stay in space
-    genTile(hmap_, cmap_, (uint32_t)(planet * 2654435761u), PLANETS[planet].col);
-    surface_ = planet;
+    if (!hmap_ || !cmap_) return;        // no terrain buffer -> stay in space
+    surface_ = planet;                   // tile is already built (background) + cached
     sx_ = 128; sy_ = 128; salt_ = 75; syaw_ = 0; spitch_ = 0;   // low start: terrain in view
 }
 
@@ -467,15 +490,23 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
         break;
     }
 
-    // Drop low over a planet -> switch into the voxel-terrain surface mode.
+    // Approaching a planet: build its terrain in the background during the
+    // descent, then switch into surface mode the instant we are low enough and
+    // the tile is ready -> no generation hitch. Tiles are cached per planet.
     if (landed_ < 0) {
+        int nearI = -1; float nearAlt = 1e9f;
         for (int i = 0; i < N_PLANETS; ++i) {
             if (PLANETS[i].sun) continue;
             const float dx = PLANETS[i].x - px_, dy = PLANETS[i].y - py_, dz = PLANETS[i].z - pz_;
-            if (sqrtf(dx*dx + dy*dy + dz*dz) - PLANETS[i].radius < SURFACE_ENTER) {
-                enterSurface(i);
-                break;
+            const float a = sqrtf(dx*dx + dy*dy + dz*dz) - PLANETS[i].radius;
+            if (a < nearAlt) { nearAlt = a; nearI = i; }
+        }
+        if (nearI >= 0) {
+            if (nearAlt < SURFACE_PREP && reqPlanet_ != nearI && donePlanet_ != nearI) {
+                reqPlanet_ = nearI;                              // kick off the build
+                if (genTask_) xTaskNotifyGive(static_cast<TaskHandle_t>(genTask_));
             }
+            if (nearAlt < SURFACE_ENTER && donePlanet_ == nearI) enterSurface(nearI);
         }
     }
 }

@@ -54,10 +54,18 @@ private:
     uint8_t*  hmap_ = nullptr;          // procedural heightmap tile (PSRAM)
     uint16_t* cmap_ = nullptr;          // matching color tile (PSRAM)
 
+    // The terrain tile is built in the background while you approach (so the
+    // switch to surface mode is instant) and cached per planet.
+    volatile int reqPlanet_  = -1;      // planet the gen task should build
+    volatile int donePlanet_ = -1;      // planet currently held in hmap_/cmap_
+    void*        genTask_     = nullptr;
+
     void enterSurface(int planet);
     void exitSurface();
     void updateSurface(const core::Input& in, float dt);
     void renderSurface(board::gfx::Surface& s);
+    void genLoop();                     // background terrain-generation loop
+    static void genTaskTramp(void* self);
 };
 
 } // namespace apps
