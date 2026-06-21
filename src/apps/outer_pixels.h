@@ -66,6 +66,11 @@ private:
     void renderSurface(board::gfx::Surface& s);
     void genLoop();                     // background terrain-generation loop
     static void genTaskTramp(void* self);
+
+    // Cloud-dive transition (space <-> surface).
+    int   dive_  = 0;                   // 1 = transition running
+    float diveT_ = 0;
+    void drawClouds(board::gfx::Surface& s, uint16_t sky);
 };
 
 } // namespace apps

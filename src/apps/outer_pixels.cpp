@@ -30,28 +30,41 @@ constexpr float GRAV      = 1.0f;
 constexpr float LAND_SPEED = 20.0f;     // relative to the planet
 constexpr float LAUNCH_V   = 26.0f;
 
+// A body: sun, planet, moon or comet. "parent" generalises the orbit so the
+// hierarchy stays organised — a moon orbits a planet, a planet/comet orbits the
+// sun. Position is recomputed every frame from the parent + the orbit.
 struct Planet {
-    float    x, y, z;               // live position (computed from the orbit)
+    float    x, y, z;               // live position (computed)
     float    radius, gm;
     uint16_t col, atmo;
-    bool     sun;
+    bool     sun, comet;
+    int8_t   parent;                // body it orbits (-1 = fixed at the origin)
     const char* name;
-    float    orbR, orbW, inc, node, phase;   // circular orbit around the sun
+    float    orbR, orbW, inc, node, phase;
 };
 
-// Field order: x,y,z (live, computed each frame) | radius gm | bodyColor
-// skyColor | isSun | name | orbit: radius angularSpeed inclination node phase.
-//
-// To add a world: append a row. Position comes from the orbit, so just pick a
-// distinct orbR (and ideally a different inc/phase) so it has its own lane.
-// radius = how big it looks; gm = how hard it pulls (roughly scale with size).
+// Order matters: a body's parent must appear before it (sun, planets, moons,
+// comets). Columns: radius gm | col atmo | sun comet parent | name | orbit:
+// radius angularSpeed inclination node phase.
 Planet PLANETS[] = {
-    {0,0,0,  78, 9000, 0xFE60, 0xFCA0, true,  "Helion",     0,   0,      0,    0,    0   },
-    {0,0,0,  14, 2200, 0x5BDF, 0x6D7F, false, "Sylara",     190, 0.100f, 0.15f, 0.0f, 0.0f},
-    {0,0,0,  32, 6500, 0xFD20, 0xFCC8, false, "Brontes",    300, 0.055f, 0.40f, 1.2f, 1.0f}, 
-    {0,0,0,   8, 1100, 0x9FF3, 0xAEF7, false, "Ione",     240, 0.085f, 0.25f, 2.4f, 2.0f},
-    {0,0,0,  20, 3600, 0xF81F, 0xFC9F, false, "Astrea",     430, 0.045f, 0.55f, 3.5f, 0.5f},
-    {0,0,0,  11, 1600, 0x07E0, 0x8FEA, false, "Caelum",     360, 0.070f, 0.30f, 5.0f, 3.0f},
+    {0,0,0, 78, 9000, 0xFE60, 0xFCA0, true,  false, -1, "Helion",  0,   0,      0,    0,    0   },
+    {0,0,0, 14, 2200, 0x5BDF, 0x6D7F, false, false,  0, "Sylara",  290, 0.085f, 0.15f, 0.0f, 0.0f},
+    {0,0,0, 32, 6500, 0xFD20, 0xFCC8, false, false,  0, "Brontes", 460, 0.045f, 0.40f, 1.2f, 1.0f},
+    {0,0,0,  8, 1100, 0x9FF3, 0xAEF7, false, false,  0, "Ione",    370, 0.070f, 0.25f, 2.4f, 2.0f},
+    {0,0,0, 20, 3600, 0xF81F, 0xFC9F, false, false,  0, "Astrea",  640, 0.035f, 0.55f, 3.5f, 0.5f},
+    {0,0,0, 11, 1600, 0x07E0, 0x8FEA, false, false,  0, "Caelum",  540, 0.055f, 0.30f, 5.0f, 3.0f},
+    // moons (parent = a planet index above). Brontes(2) has two. Distinct
+    // neutral greys so they read as rock/dust rather than coloured worlds.
+    {0,0,0,  4,  120, 0xF79E, 0xF79E, false, false,  2, "Cinder",  62, 0.70f, 0.30f, 0.4f, 0.0f},
+    {0,0,0,  3,   80, 0x738E, 0x738E, false, false,  2, "Ash",     90, 0.50f, 0.90f, 1.2f, 2.0f},
+    {0,0,0,  3,   80, 0xD69A, 0xD69A, false, false,  4, "Dust",    46, 0.85f, 0.50f, 1.2f, 1.0f},
+    {0,0,0,  3,   70, 0xB596, 0xB596, false, false,  1, "Mica",    34, 0.95f, 0.25f, 0.0f, 0.5f},
+    {0,0,0,  4,  100, 0x9492, 0x9492, false, false,  5, "Flint",   42, 0.80f, 0.60f, 3.0f, 1.5f},
+    // comets (parent = sun) — nucleus + tail pointing away from the sun
+    {0,0,0,  3,    0, 0xAEFF, 0x0000, false, true,   0, "Wisp",    400, 0.090f, 0.95f, 2.0f, 0.0f},
+    {0,0,0,  2,    0, 0xCEFF, 0x0000, false, true,   0, "Shard",   500, 0.075f, 1.30f, 4.0f, 1.5f},
+    {0,0,0,  3,    0, 0xBFEF, 0x0000, false, true,   0, "Tine",    340, 0.105f, 1.10f, 3.2f, 2.5f},
+    {0,0,0,  2,    0, 0xDFFF, 0x0000, false, true,   0, "Vane",    560, 0.065f, 0.70f, 5.0f, 5.5f},
 };
 constexpr int N_PLANETS = sizeof(PLANETS) / sizeof(PLANETS[0]);
 constexpr float ATMO_SCALE = 1.6f;
@@ -107,6 +120,7 @@ constexpr float SCLIMB = 70.0f;             // climb / descend rate
 constexpr float SBASE  = 30.0f, SBOOST = 45.0f;       // forward speed (base + throttle)
 constexpr float V_FOV  = 0.9f, V_ZFAR = 340.0f, V_SCALEY = 180.0f;
 constexpr float V_TILT = 40.0f;             // camera look-down (more = look further down)
+constexpr float DIVE_TIME = 0.7f;           // cloud-dive transition length (s)
 
 inline uint32_t thash(int x, int y, uint32_t seed) {
     uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u + seed * 2246822519u;
@@ -124,12 +138,14 @@ inline float vnoise(float x, float y, int period, uint32_t seed) {
     float a = cv(x0, y0), b = cv(x0 + 1, y0), c = cv(x0, y0 + 1), d = cv(x0 + 1, y0 + 1);
     return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
 }
+// Every band is tinted toward the planet's own colour, so each world's terrain
+// has a clearly distinct hue instead of all looking the same.
 inline uint16_t terrainColor(int h, uint16_t base) {
-    if (h < 28)  return 0x041F;                       // water
-    if (h < 38)  return 0xEF5A;                       // sand
-    if (h < 110) return blend(0x2E68, base, 0.25f);   // grass, tinted per planet
-    if (h < 185) return 0x8410;                       // rock
-    return 0xFFFF;                                     // snow caps
+    if (h < 28)  return blend(0x041F, base, 0.30f);   // water
+    if (h < 38)  return blend(0xEF5A, base, 0.30f);   // sand
+    if (h < 110) return blend(0x2E68, base, 0.45f);   // grass / lowland
+    if (h < 185) return blend(0x8410, base, 0.38f);   // rock
+    return blend(0xFFFF, base, 0.15f);                // snow caps
 }
 // Fill a heightmap + colormap tile: low-freq ranges + finer octaves. seed
 // varies the shape, base tints the grass so each planet looks different.
@@ -159,24 +175,31 @@ void orbitPoint(const Planet& p, float a, float& X, float& Y, float& Z) {
     Y = y;
 }
 
-void planetPos(const Planet& p, float t, float& X, float& Y, float& Z) {
-    if (p.sun) { X = Y = Z = 0; return; }
-    orbitPoint(p, p.phase + p.orbW * t, X, Y, Z);
-}
-
-void planetVel(const Planet& p, float t, float& vX, float& vY, float& vZ) {
-    if (p.sun) { vX = vY = vZ = 0; return; }
+// World-space velocity of a body = parent velocity + own orbital velocity.
+void bodyVel(int idx, float t, float& vX, float& vY, float& vZ) {
+    const Planet& p = PLANETS[idx];
+    if (p.parent < 0) { vX = vY = vZ = 0; return; }
+    float pvx, pvy, pvz; bodyVel(p.parent, t, pvx, pvy, pvz);
     const float a = p.phase + p.orbW * t, da = p.orbW;
     const float dlx = -p.orbR * sinf(a) * da, dlz = p.orbR * cosf(a) * da;
     const float vy = dlz * sinf(p.inc), vz = dlz * cosf(p.inc), vx = dlx;
-    vX = vx * cosf(p.node) + vz * sinf(p.node);
-    vZ = -vx * sinf(p.node) + vz * cosf(p.node);
-    vY = vy;
+    vX = pvx + vx * cosf(p.node) + vz * sinf(p.node);
+    vZ = pvz + (-vx * sinf(p.node) + vz * cosf(p.node));
+    vY = pvy + vy;
 }
 
+// Recompute every body from its orbit around its parent. Parents come earlier
+// in the table, so one forward pass is enough.
 void updatePlanets(float t) {
-    for (int i = 0; i < N_PLANETS; ++i)
-        planetPos(PLANETS[i], t, PLANETS[i].x, PLANETS[i].y, PLANETS[i].z);
+    for (int i = 0; i < N_PLANETS; ++i) {
+        const Planet& p = PLANETS[i];
+        float ox = 0, oy = 0, oz = 0;
+        if (p.parent >= 0) orbitPoint(p, p.phase + p.orbW * t, ox, oy, oz);
+        const float bx = p.parent >= 0 ? PLANETS[p.parent].x : 0.0f;
+        const float by = p.parent >= 0 ? PLANETS[p.parent].y : 0.0f;
+        const float bz = p.parent >= 0 ? PLANETS[p.parent].z : 0.0f;
+        PLANETS[i].x = bx + ox; PLANETS[i].y = by + oy; PLANETS[i].z = bz + oz;
+    }
 }
 
 // Smooth lit sphere via per-pixel Lambert shading. (Lx,Ly,Lz) is the light
@@ -189,7 +212,9 @@ void drawSphere(Surface& s, float scx, float scy, float r, uint16_t base,
     // filling planet fast.
     uint16_t lut[65];
     for (int i = 0; i <= 64; ++i) {
-        uint16_t c = scaleRGB(base, 0.20f + 0.80f * (i / 64.0f));
+        const float bf = i / 64.0f;
+        uint16_t c = scaleRGB(base, 0.18f + 0.74f * bf);
+        if (bf > 0.86f) c = blend(c, 0xFFFF, (bf - 0.86f) / 0.14f * 0.65f);  // specular hotspot
         if (haze > 0.01f) c = blend(c, bg, haze);
         lut[i] = Surface::toPanel(c);
     }
@@ -242,7 +267,7 @@ void Outer_Pixels::onEnter() {
     up_[0] = 0; up_[1] = 1; up_[2] = 0;
     landed_ = -1;
     showOrbits_ = false; prevA_ = prevY_ = false;
-    selected_ = 1;   // Aqua
+    selected_ = -1;   // nothing targeted until you pick one with A
     for (int i = 0; i < 80; ++i) {
         float x = int(rnd() % 2000) - 1000.0f;
         float y = int(rnd() % 2000) - 1000.0f;
@@ -296,6 +321,7 @@ void Outer_Pixels::exitSurface() {
     up_[0] = 0; up_[1] = 0; up_[2] = 1;
     selected_ = surface_;
     surface_ = -1;
+    dive_ = 1; diveT_ = 0;               // punch back up through the clouds
 }
 
 void Outer_Pixels::updateSurface(const core::Input& in, float dt) {
@@ -373,11 +399,37 @@ void Outer_Pixels::renderSurface(Surface& s) {
     s.text((W - s.textWidth(hud, 2)) / 2, 8, hud, 0xFFFF, 2);
     s.text(8, H - 16, core::pad::connected() ? "climb to leave   B exit" : "drag to fly",
            0x8410, 1);
+
+    if (dive_) drawClouds(s, sky);
+}
+
+// Cloud layer for the space<->surface transition: puffs cover the screen, then
+// shrink and scatter outward to reveal the new view ("punch through clouds").
+void Outer_Pixels::drawClouds(Surface& s, uint16_t sky) {
+    float a = 1.0f - diveT_ / DIVE_TIME; if (a < 0) a = 0; if (a > 1) a = 1;
+    const uint16_t t1 = blend(sky, 0xFFFF, 0.55f);
+    const uint16_t t2 = blend(sky, 0xFFFF, 0.35f);
+    const uint16_t t3 = blend(sky, 0xFFFF, 0.18f);
+    const int drift = int((1.0f - a) * (1.0f - a) * 220.0f);   // accelerates outward
+    const int rad   = int(14.0f * a) + 1;
+    int idx = 0;
+    // many small, mottled puffs (3 tints) -> finer texture than big blobs
+    for (int gy = -16; gy < H + 24; gy += 24)
+        for (int gx = -16; gx < W + 24; gx += 24, ++idx) {
+            const uint32_t h = thash(gx, gy, 5);
+            const float dx = gx - W * 0.5f, dy = gy - H * 0.5f;
+            const float dl = 1.0f / sqrtf(dx*dx + dy*dy + 1.0f);
+            const int cx = gx + int(h & 15) - 8 + int(dx * dl * drift);
+            const int cy = gy + int(h >> 4 & 15) - 8 + int(dy * dl * drift);
+            const uint16_t c = (idx % 3 == 0) ? t1 : (idx % 3 == 1) ? t2 : t3;
+            s.filledCircle(cx, cy, rad + int(h >> 8 & 3), c);
+        }
 }
 
 void Outer_Pixels::update(const core::Input& in, float dt) {
     if (dt <= 0) return;
     if (dt > 0.05f) dt = 0.05f;
+    if (dive_) { diveT_ += dt; if (diveT_ >= DIVE_TIME) dive_ = 0; }
     if (surface_ >= 0) { updateSurface(in, dt); return; }
     t_ += dt;
     updatePlanets(t_);
@@ -415,7 +467,7 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
         px_ = p.x + landOX_; py_ = p.y + landOY_; pz_ = p.z + landOZ_;
         if (aBtn && !prevA_) {
             const float nl = 1.0f / sqrtf(landOX_*landOX_ + landOY_*landOY_ + landOZ_*landOZ_ + 1e-3f);
-            float pvx, pvy, pvz; planetVel(p, t_, pvx, pvy, pvz);
+            float pvx, pvy, pvz; bodyVel(landed_, t_, pvx, pvy, pvz);
             vx_ = pvx + landOX_ * nl * LAUNCH_V;
             vy_ = pvy + landOY_ * nl * LAUNCH_V;
             vz_ = pvz + landOZ_ * nl * LAUNCH_V;
@@ -467,6 +519,7 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
     // Surface contact -> land (slow, relative to the planet) or bounce.
     for (int i = 0; i < N_PLANETS; ++i) {
         const Planet& p = PLANETS[i];
+        if (p.sun || p.comet) continue;            // no solid surface to land on
         float dx = px_ - p.x, dy = py_ - p.y, dz = pz_ - p.z;
         const float d = sqrtf(dx*dx + dy*dy + dz*dz);
         if (d >= p.radius + 0.5f) continue;
@@ -475,7 +528,7 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
         px_ = p.x + nx * (p.radius + 0.5f);
         py_ = p.y + ny * (p.radius + 0.5f);
         pz_ = p.z + nz * (p.radius + 0.5f);
-        float pvx, pvy, pvz; planetVel(p, t_, pvx, pvy, pvz);
+        float pvx, pvy, pvz; bodyVel(i, t_, pvx, pvy, pvz);
         const float rvx = vx_ - pvx, rvy = vy_ - pvy, rvz = vz_ - pvz;
         if (sqrtf(rvx*rvx + rvy*rvy + rvz*rvz) < LAND_SPEED) {
             landed_ = i;
@@ -496,7 +549,7 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
     if (landed_ < 0) {
         int nearI = -1; float nearAlt = 1e9f;
         for (int i = 0; i < N_PLANETS; ++i) {
-            if (PLANETS[i].sun) continue;
+            if (PLANETS[i].sun || PLANETS[i].comet || PLANETS[i].radius < 8.0f) continue;
             const float dx = PLANETS[i].x - px_, dy = PLANETS[i].y - py_, dz = PLANETS[i].z - pz_;
             const float a = sqrtf(dx*dx + dy*dy + dz*dz) - PLANETS[i].radius;
             if (a < nearAlt) { nearAlt = a; nearI = i; }
@@ -506,7 +559,10 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
                 reqPlanet_ = nearI;                              // kick off the build
                 if (genTask_) xTaskNotifyGive(static_cast<TaskHandle_t>(genTask_));
             }
-            if (nearAlt < SURFACE_ENTER && donePlanet_ == nearI) enterSurface(nearI);
+            if (nearAlt < SURFACE_ENTER && donePlanet_ == nearI) {
+                enterSurface(nearI);
+                dive_ = 1; diveT_ = 0;                           // dive through the clouds
+            }
         }
     }
 }
@@ -532,6 +588,7 @@ void Outer_Pixels::render(Surface& s) {
 
     int near = -1; float nd = 1e9f;
     for (int i = 0; i < N_PLANETS; ++i) {
+        if (PLANETS[i].comet) continue;            // comets have no atmosphere
         const float dx = PLANETS[i].x - px_, dy = PLANETS[i].y - py_, dz = PLANETS[i].z - pz_;
         const float d = sqrtf(dx*dx + dy*dy + dz*dz) - PLANETS[i].radius;
         if (d < nd) { nd = d; near = i; }
@@ -570,13 +627,17 @@ void Outer_Pixels::render(Surface& s) {
     // Orbit lines (toggle with Y).
     if (showOrbits_) {
         for (int i = 0; i < N_PLANETS; ++i) {
-            if (PLANETS[i].sun) continue;
-            const uint16_t oc = blend(PLANETS[i].col, bg, 0.55f);
+            const Planet& pb = PLANETS[i];
+            if (pb.sun || pb.comet) continue;
+            const float bx = pb.parent >= 0 ? PLANETS[pb.parent].x : 0.0f;
+            const float by = pb.parent >= 0 ? PLANETS[pb.parent].y : 0.0f;
+            const float bz = pb.parent >= 0 ? PLANETS[pb.parent].z : 0.0f;
+            const uint16_t oc = blend(pb.col, bg, 0.55f);
             float pxs = 0, pys = 0; bool have = false;
             for (int k = 0; k <= 48; ++k) {
-                float wx, wy, wz; orbitPoint(PLANETS[i], k * (6.2832f / 48), wx, wy, wz);
+                float ox, oy, oz; orbitPoint(pb, k * (6.2832f / 48), ox, oy, oz);
                 float sxp, syp, dep;
-                if (project(wx, wy, wz, sxp, syp, dep)) {
+                if (project(bx + ox, by + oy, bz + oz, sxp, syp, dep)) {
                     if (have) s.line(int(pxs), int(pys), int(sxp), int(syp), oc);
                     pxs = sxp; pys = syp; have = true;
                 } else have = false;
@@ -606,6 +667,18 @@ void Outer_Pixels::render(Surface& s) {
 
         const float haze = atmoT * (dep > 80 ? 0.7f : dep / 80 * 0.7f);
 
+        if (p.comet) {
+            // Tail streams directly away from the sun (origin).
+            const float aw = 1.0f / sqrtf(p.x*p.x + p.y*p.y + p.z*p.z + 1e-3f);
+            const float ex = p.x*aw, ey = p.y*aw, ez = p.z*aw;
+            float tx, ty, tdep;
+            if (project(p.x + ex*48, p.y + ey*48, p.z + ez*48, tx, ty, tdep)) {
+                s.line(int(scx), int(scy), int(tx), int(ty), blend(p.col, bg, 0.6f));
+                s.line(int(scx), int(scy), int((scx+tx)*0.5f), int((scy+ty)*0.5f), p.col);
+            }
+            s.filledCircle(int(scx), int(scy), r < 2 ? 2 : r, 0xFFFF);   // bright nucleus
+            continue;
+        }
         if (p.sun) {
             // Soft halo straight from the disc color into the sky, so the
             // edge doesn't read as a hard circle. Skip it up close (the huge
@@ -678,38 +751,37 @@ void Outer_Pixels::render(Surface& s) {
     s.hLine(W/2 - 10, H/2, 21, 0x05FF);
     s.fillRect(W/2, H/2 - 10, 1, 21, 0x05FF);
 
-    // HUD.
-    char hud[48];
-    snprintf(hud, sizeof(hud), "OUTER PIXELS   spd %.0f   %.0f fps", speed, core::manager::fps());
-    s.text((W - s.textWidth(hud, 2)) / 2, 8, hud, 0xFFFF, 2);
+    // Speed, top-centre and dimmed.
+    char spd[20];
+    snprintf(spd, sizeof(spd), "spd %.0f", speed);
+    s.text((W - s.textWidth(spd, 2)) / 2, 8, spd, 0x8410, 2);
 
+    // Context hints.
+    if (landed_ >= 0) {
+        const char* m = core::pad::connected() ? "LANDED  -  A to launch"
+                                               : "LANDED  -  tap lower-left to launch";
+        s.text((W - s.textWidth(m, 2)) / 2, H - 56, m, 0x07E0, 2);
+    } else if (!core::pad::connected()) {
+        const char* m = "searching for controller...";
+        s.text((W - s.textWidth(m, 1)) / 2, H - 52, m, 0x8410, 1);
+    } else if (near >= 0 && nd < 25.0f) {
+        const char* m = (speed < LAND_SPEED + 8) ? "approach: slow to land"
+                                                 : "too fast - brake (LT)";
+        s.text((W - s.textWidth(m, 1)) / 2, H - 52, m,
+               speed < LAND_SPEED + 8 ? 0x07E0 : 0xFD20, 1);
+    }
+
+    // Target name + distance, bottom-centre (only when something is targeted).
     if (selected_ >= 0) {
         const Planet& t = PLANETS[selected_];
         const float dx = t.x - px_, dy = t.y - py_, dz = t.z - pz_;
         char nav[40];
-        snprintf(nav, sizeof(nav), ">%s  %.0f", t.name,
+        snprintf(nav, sizeof(nav), "%s   %.0f", t.name,
                  sqrtf(dx*dx + dy*dy + dz*dz) - t.radius);
-        s.text((W - s.textWidth(nav, 2)) / 2, 30, nav, 0x07E0, 2);
+        s.text((W - s.textWidth(nav, 2)) / 2, H - 26, nav, 0x07E0, 2);
     }
 
-    if (landed_ >= 0) {
-        const char* m = core::pad::connected() ? "LANDED  -  A to launch"
-                                               : "LANDED  -  tap lower-left to launch";
-        s.text((W - s.textWidth(m, 2)) / 2, H - 60, m, 0x07E0, 2);
-    } else if (!core::pad::connected()) {
-        const char* m = "searching for controller...";
-        s.text((W - s.textWidth(m, 1)) / 2, H - 56, m, 0x8410, 1);
-    } else if (near >= 0 && nd < 25.0f) {
-        const char* m = (speed < LAND_SPEED + 8) ? "approach: slow to land"
-                                                 : "too fast - brake (LT)";
-        s.text((W - s.textWidth(m, 1)) / 2, H - 56, m,
-               speed < LAND_SPEED + 8 ? 0x07E0 : 0xFD20, 1);
-    }
-
-    if (core::pad::connected())
-        s.text(8, H - 16, "A target  Y orbits  RT/LT thrust  Rstick roll", 0x8410, 1);
-    else
-        s.text(8, H - 16, "no pad: drag steer  |  corners: thrust / launch", 0x8410, 1);
+    if (dive_) drawClouds(s, sky);
 }
 
 } // namespace apps
