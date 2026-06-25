@@ -13,6 +13,10 @@
   </table>
 </div>
 
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=ePTqaHAo_ig">▶ Watch on YouTube</a>
+</p>
+
 Pocket AMOLED playground for the Waveshare ESP32-S3-Touch-AMOLED-1.8: a tiny
 app engine (touch launcher, double-buffered DMA renderer, sound mixer with
 MP3, storage, Wi-Fi/BLE) plus a growing pile of experiments. Modern C++.
