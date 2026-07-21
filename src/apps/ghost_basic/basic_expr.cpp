@@ -153,7 +153,7 @@ Basic::Value Basic::callFunction(const std::string& name) {
     else if (name == "ATN") r = Value::number(std::atan(a.num));
     else if (name == "EXP") r = Value::number(std::exp(a.num));
     else if (name == "LOG") r = Value::number(std::log(a.num));
-    else if (name == "PEEK") r = Value::number(ram_ ? ram_[int(a.num) & 0xFFFF] : 0);
+    else if (name == "PEEK") r = Value::number(peekMem(int(a.num)));
     else if (name == "LEN") r = Value::number(double(a.str.size()));
     else if (name == "ASC") r = Value::number(a.str.empty() ? 0 : (unsigned char)a.str[0]);
     else if (name == "VAL") r = Value::number(std::atof(a.str.c_str()));

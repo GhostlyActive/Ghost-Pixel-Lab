@@ -644,7 +644,46 @@ void Basic::stPoke() {
     if (peek() != ',') { setError("SYNTAX"); return; }
     ++pos_;
     Value val = parseExpr(); if (err_) return;
-    if (ram_) ram_[int(addr.num) & 0xFFFF] = uint8_t(int(val.num) & 0xFF);
+    pokeMem(int(addr.num), uint8_t(int(val.num) & 0xFF));
+}
+
+// ---------------------------------------------------------------------------
+// memory map — the addresses every C64 listing pokes at
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr int SCREEN_RAM = 1024;    // $0400, 40x25 screen codes
+constexpr int COLOR_RAM  = 55296;   // $D800, one colour nibble per cell
+constexpr int VIC_BORDER = 53280;   // $D020
+constexpr int VIC_BG     = 53281;   // $D021
+}
+
+void Basic::pokeMem(int addr, uint8_t value) {
+    addr &= 0xFFFF;
+    if (addr >= SCREEN_RAM && addr < SCREEN_RAM + Screen::CELLS) {
+        screen_.pokeScreen(addr - SCREEN_RAM, value);
+    } else if (addr >= COLOR_RAM && addr < COLOR_RAM + Screen::CELLS) {
+        screen_.pokeColor(addr - COLOR_RAM, value);
+    } else if (addr == VIC_BORDER) {
+        screen_.setBorder(value);
+    } else if (addr == VIC_BG) {
+        screen_.setBackground(value);
+    } else if (ram_) {
+        ram_[addr] = value;
+    }
+}
+
+uint8_t Basic::peekMem(int addr) const {
+    addr &= 0xFFFF;
+    if (addr >= SCREEN_RAM && addr < SCREEN_RAM + Screen::CELLS)
+        return screen_.peekScreen(addr - SCREEN_RAM);
+    if (addr >= COLOR_RAM && addr < COLOR_RAM + Screen::CELLS)
+        return screen_.peekColor(addr - COLOR_RAM);
+    // The real VIC returns the unused top bits as 1s; we hand back the plain
+    // 0..15 so POKE 53280,PEEK(53280)+1 cycles colours the obvious way.
+    if (addr == VIC_BORDER) return screen_.border();
+    if (addr == VIC_BG)     return screen_.background();
+    return ram_ ? ram_[addr] : 0;
 }
 
 void Basic::stDef() {

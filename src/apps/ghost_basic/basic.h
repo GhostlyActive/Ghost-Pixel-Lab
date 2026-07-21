@@ -113,6 +113,13 @@ private:
     void  assignTarget(const Value& v);  // parse a scalar/array lvalue and store
     void  clearVars();
 
+    // ---- memory map ----------------------------------------------------
+    // POKE/PEEK are a real address bus: the screen, colour RAM and the two VIC
+    // colour registers live at their original C64 addresses, everything else
+    // falls through to plain RAM.
+    void    pokeMem(int addr, uint8_t value);
+    uint8_t peekMem(int addr) const;
+
     // ---- DATA / READ ---------------------------------------------------
     bool  readData(std::string& out);
     void  restoreData() { dataLine_ = 0; dataPos_ = 0; dataInStmt_ = false; }

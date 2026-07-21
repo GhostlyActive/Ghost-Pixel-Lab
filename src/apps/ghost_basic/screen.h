@@ -47,6 +47,18 @@ public:
     void poke(int x, int y, uint8_t screenCode, uint8_t color);
     uint8_t peekCode(int x, int y) const;
 
+    // Memory-mapped access, the way a C64 program reaches the screen: the
+    // 1000 cells behind POKE 1024+n, the colour nibbles behind POKE 55296+n,
+    // and the two VIC colour registers. Offsets outside the grid are ignored,
+    // so a runaway POKE loop cannot corrupt anything.
+    static constexpr int CELLS = ROWS * COLS;   // 1000
+    void    pokeScreen(int offset, uint8_t screenCode);
+    uint8_t peekScreen(int offset) const;
+    void    pokeColor(int offset, uint8_t color);
+    uint8_t peekColor(int offset) const;
+    uint8_t background() const { return bg_; }
+    uint8_t border() const     { return border_; }
+
     // Read a single physical row back as PETSCII text (trailing spaces
     // trimmed, NUL-terminated). Returns the character count.
     int readLine(int row, char* out, int outSize) const;

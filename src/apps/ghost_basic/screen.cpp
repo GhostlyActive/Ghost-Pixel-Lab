@@ -41,13 +41,15 @@ inline void fillL(board::gfx::Surface& s, int lx, int ly, int w, int h, uint16_t
 // readLine and readLogicalLine so the mapping can never drift between them.
 // Note screen code 30 is the up-arrow, which is BASIC's exponent operator '^'.
 char screenToPetscii(uint8_t sc) {
-    sc &= 0x3F;
+    sc &= 0x7F;
     if (sc == 0)              return '@';
     if (sc >= 1 && sc <= 26)  return char('A' + sc - 1);
     if (sc == 27)             return '[';
     if (sc == 29)             return ']';
     if (sc == 30)             return '^';
     if (sc >= 32 && sc <= 63) return char(sc);
+    // Graphics characters have no BASIC source form; a line read back off the
+    // screen sees them as blanks rather than as bogus tokens.
     return ' ';
 }
 }
@@ -77,6 +79,22 @@ void Screen::poke(int x, int y, uint8_t screenCode, uint8_t color) {
 uint8_t Screen::peekCode(int x, int y) const {
     if ((unsigned)x >= COLS || (unsigned)y >= ROWS) return 32;
     return code_[index(x, y)];
+}
+
+void Screen::pokeScreen(int offset, uint8_t screenCode) {
+    if ((unsigned)offset < (unsigned)CELLS) code_[offset] = screenCode;
+}
+
+uint8_t Screen::peekScreen(int offset) const {
+    return (unsigned)offset < (unsigned)CELLS ? code_[offset] : 32;
+}
+
+void Screen::pokeColor(int offset, uint8_t color) {
+    if ((unsigned)offset < (unsigned)CELLS) color_[offset] = color & 0x0F;
+}
+
+uint8_t Screen::peekColor(int offset) const {
+    return (unsigned)offset < (unsigned)CELLS ? color_[offset] : 0;
 }
 
 void Screen::newLine() {
@@ -166,7 +184,7 @@ void Screen::drawCell(Surface& s, int col, int row,
                       uint8_t code, uint8_t color, bool reverse) const {
     const uint16_t fg  = PALETTE[color & 0x0F];
     const uint16_t bgc = PALETTE[bg_];
-    const uint8_t* g   = petscii::FONT[code & 0x3F];
+    const uint8_t* g   = petscii::FONT[code & 0x7F];
 
     const int sx0 = col * petscii::CW;   // this cell's top-left source pixel
     const int sy0 = row * petscii::CH;

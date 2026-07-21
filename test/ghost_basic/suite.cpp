@@ -3,6 +3,7 @@
 #include "apps/ghost_basic/screen.h"
 #include "apps/ghost_basic/basic.h"
 #include "apps/ghost_basic/editor.h"
+#include "apps/ghost_basic/petscii.h"
 #include "board/display.h"
 
 #include <cstdint>
@@ -340,6 +341,62 @@ int main() {
         if (ok) ++passN;
         else { ++failN; std::printf("FAIL  directory  got: ");
                for (auto& x : out) std::printf("[%s] ", x.c_str()); std::printf("\n"); }
+    }
+
+    // --- memory map: POKE really reaches the screen ---
+    // Screen and colour RAM must be poked and read back in one line: the
+    // harness clears the screen between steps, which would wipe them.
+    checkSeq("poke/peek screen ram", {"POKE 1024,5:PRINT PEEK(1024)"}, {"5"});
+    checkSeq("poke/peek colour ram", {"POKE 55296,2:PRINT PEEK(55296)"}, {"2"});
+    checkSeq("colour ram masks to 4 bits", {"POKE 55296,255:PRINT PEEK(55296)"}, {"15"});
+    checkSeq("border register",      {"POKE 53280,0", "PRINT PEEK(53280)"}, {"0"});
+    checkSeq("background register",  {"POKE 53281,6", "PRINT PEEK(53281)"}, {"6"});
+    checkSeq("plain ram still works",{"POKE 4096,77", "PRINT PEEK(4096)"}, {"77"});
+
+    // Screen codes 1 and 2 are "A" and "B": poking them must become visible
+    // characters, which is the whole point of the exercise.
+    {
+        basic.reset(); scr.reset();
+        typeEnter("POKE 1024+40*12,1:POKE 1024+40*12+1,2");
+        char b[81]; scr.readLine(12, b, sizeof b);
+        if (std::string(b) == "AB") ++passN;
+        else { ++failN; std::printf("FAIL  poke writes characters  got [%s]\n", b); }
+    }
+
+    // One past the last cell is no longer screen — it is ordinary RAM, exactly
+    // as on the real machine, and must not spill into the grid.
+    checkSeq("past the screen is plain ram",
+        {"POKE 2024,1", "PRINT PEEK(2024)"}, {"1"});
+
+    // --- font table integrity -------------------------------------------
+    // A single entry silently dropping out shifts every glyph after it. That
+    // happened for real: a comment ending in a backslash swallowed the next
+    // line, and codes 78..127 all slid down by one. Only two codes are blank
+    // by design, so an all-zero glyph anywhere else means the table lost an
+    // entry and the tail shifted.
+    {
+        int blanks = 0, firstBad = -1;
+        for (int code = 0; code < 128; ++code) {
+            bool empty = true;
+            for (int r = 0; r < 8; ++r) if (petscii::FONT[code][r]) { empty = false; break; }
+            if (!empty) continue;
+            ++blanks;
+            if (code != 32 && code != 96 && firstBad < 0) firstBad = code;
+        }
+        if (firstBad < 0 && blanks == 2) ++passN;
+        else { ++failN; std::printf("FAIL  font table: %d blank glyphs, first unexpected at %d\n",
+                                    blanks, firstBad); }
+    }
+
+    // Spot-check the codes real listings depend on.
+    {
+        struct { int code; uint8_t row0; } want[] = {
+            { 64, 0x00}, { 81, 0x00}, { 91, 0x10}, { 93, 0x10}, {102, 0xAA}, {127, 0xF0},
+        };
+        bool ok = true;
+        for (auto& w : want) if (petscii::FONT[w.code][0] != w.row0) ok = false;
+        if (ok) ++passN;
+        else { ++failN; std::printf("FAIL  font spot-check: a known glyph moved\n"); }
     }
 
     // --- list sorts and round-trips the source (entered out of order) ---
