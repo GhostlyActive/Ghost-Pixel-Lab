@@ -52,6 +52,9 @@ void Basic::clearVars() {
     forStack_.clear();
     gosubStack_.clear();
     getBuf_.clear();
+    for (auto& f : openFiles_) f.used = false;
+    if (sid_) sid_->reset();
+    printTo_ = -1; cmdLf_ = -1; st_ = 0;
     restoreData();
     if (ram_) std::memset(ram_, 0, 65536);
 }
@@ -149,7 +152,7 @@ void Basic::finishRun() {
     mode_ = Mode::Idle;
 }
 
-void Basic::doBreak(bool /*stopKeyword*/) {
+void Basic::doBreak() {
     if (screen_.cursorX() != 0) screen_.put(0x0D);
     outText("BREAK");
     if (lineIdx_ >= 0 && lineIdx_ < int(lines_.size())) {
@@ -166,7 +169,7 @@ void Basic::poll() {
 
     int budget = STEP_BUDGET;
     while (mode_ == Mode::Running && budget-- > 0) {
-        if (breakReq_) { breakReq_ = false; doBreak(false); return; }
+        if (breakReq_) { breakReq_ = false; doBreak(); return; }
         if (err_) { reportError(); finishRun(); return; }
 
         skipSpaces();
@@ -188,8 +191,10 @@ void Basic::poll() {
 void Basic::execStatement() {
     skipSpaces();
     if (atEnd() || peek() == ':') return;
+    stmtStart_ = pos_;   // WAIT rewinds here to re-test without blocking
 
     if (peek() == '?') { ++pos_; stPrint(); return; }
+    if (matchKw("PRINT#"))  { stPrintFile(); return; }
     if (matchKw("PRINT"))   { stPrint();  return; }
     if (matchKw("REM"))     { pos_ = len_; return; }
     if (matchKw("DATA"))    { pos_ = len_; return; }
@@ -200,15 +205,22 @@ void Basic::execStatement() {
     if (matchKw("GOSUB"))   { stGosub();  return; }
     if (matchKw("RETURN"))  { stReturn(); return; }
     if (matchKw("ON"))      { stOn();     return; }
+    if (matchKw("INPUT#"))  { stInputFile(); return; }
     if (matchKw("INPUT"))   { stInput();  return; }
+    if (matchKw("GET#"))    { stGetFile(); return; }
     if (matchKw("GET"))     { stGet();    return; }
     if (matchKw("READ"))    { stRead();   return; }
     if (matchKw("RESTORE")) { restoreData(); return; }
     if (matchKw("DIM"))     { stDim();    return; }
     if (matchKw("POKE"))    { stPoke();   return; }
+    if (matchKw("WAIT"))    { stWait();   return; }
+    if (matchKw("OPEN"))    { stOpen();   return; }
+    if (matchKw("CLOSE"))   { stClose();  return; }
+    if (matchKw("CMD"))     { stCmd();    return; }
+    if (matchKw("VERIFY"))  { stVerify(); return; }
     if (matchKw("DEF"))     { stDef();    return; }
     if (matchKw("END"))     { finishRun(); return; }
-    if (matchKw("STOP"))    { doBreak(true); return; }
+    if (matchKw("STOP"))    { doBreak(); return; }
     if (matchKw("CONT"))    {
         if (contOk_) { lineIdx_ = contLine_; pos_ = contPos_; loadLine(); mode_ = Mode::Running; }
         else setError("CAN'T CONTINUE");
@@ -234,8 +246,8 @@ void Basic::execStatement() {
     if (matchKw("LOAD"))      { stLoad();    return; }
     if (matchKw("SCRATCH"))   { stScratch(); return; }
     if (matchKw("DIRECTORY") || matchKw("DIR")) { directory(); return; }
-    if (matchKw("LET")) { stAssign(true); return; }
-    stAssign(false);
+    if (matchKw("LET")) { stAssign(); return; }
+    stAssign();
 }
 
 // ---------------------------------------------------------------------------
@@ -252,23 +264,23 @@ void Basic::stPrint() {
         if (c == ';') { ++pos_; trailingSep = true; continue; }
         if (c == ',') {
             ++pos_; trailingSep = true;
-            int col = screen_.cursorX();
-            int target = ((col / 10) + 1) * 10;
-            if (target >= Screen::COLS) screen_.put(0x0D);
-            else while (screen_.cursorX() < target) screen_.put(' ');
+            const int col = outColumn();
+            const int target = ((col / 10) + 1) * 10;
+            if (target >= Screen::COLS) outChar(0x0D);
+            else while (outColumn() < target) outChar(' ');
             continue;
         }
         if (matchKw("TAB(")) {
             Value n = parseExpr(); if (err_) return;
             skipSpaces(); if (peek() == ')') ++pos_;
-            int t = int(n.num);
-            while (screen_.cursorX() < t && screen_.cursorX() < Screen::COLS - 1) screen_.put(' ');
+            const int t = int(n.num);
+            while (outColumn() < t && outColumn() < Screen::COLS - 1) outChar(' ');
             trailingSep = false; continue;
         }
         if (matchKw("SPC(")) {
             Value n = parseExpr(); if (err_) return;
             skipSpaces(); if (peek() == ')') ++pos_;
-            for (int i = 0; i < int(n.num); ++i) screen_.put(' ');
+            for (int i = 0; i < int(n.num); ++i) outChar(' ');
             trailingSep = false; continue;
         }
 
@@ -278,10 +290,10 @@ void Basic::stPrint() {
         else         outNumber(v.num);
         trailingSep = false;
     }
-    if (!trailingSep) screen_.put(0x0D);
+    if (!trailingSep) outChar(0x0D);
 }
 
-void Basic::stAssign(bool) {
+void Basic::stAssign() {
     skipSpaces();
     if (atEnd() || !std::isalpha((unsigned char)peek())) { setError("SYNTAX"); return; }
     assignTarget(Value{});   // assignTarget re-reads the lvalue and expects '=' expr
@@ -292,8 +304,24 @@ void Basic::assignTarget(const Value& preread) {
     // `preread` and there is no '=' after the lvalue. We tell them apart by
     // whether an '=' follows the parsed lvalue.
     skipSpaces();
-    bool isStr = false;
-    std::string name = parseName(isStr);
+    uint8_t type = VT_NUM;
+    std::string name = parseName(type);
+
+    // TI$ sets the clock; TI and ST are read-only on the original.
+    if (name == "TI" && type == VT_STR) {
+        skipSpaces();
+        if (peek() != '=') { setError("SYNTAX"); return; }
+        ++pos_;
+        Value v = parseExpr();
+        if (err_) return;
+        if (!v.isStr) { setError("TYPE MISMATCH"); return; }
+        setTimeString(v.str);
+        return;
+    }
+    if ((name == "TI" && type == VT_NUM) || (name == "ST" && type == VT_NUM)) {
+        setError("SYNTAX"); return;
+    }
+
     std::vector<int> idx;
     skipSpaces();
     bool isArray = false;
@@ -302,24 +330,25 @@ void Basic::assignTarget(const Value& preread) {
     // Assignment statement path: consume '=' and evaluate RHS.
     skipSpaces();
     Value v;
+    bool fromExpr = false;
     if (peek() == '=') {
         ++pos_;
         v = parseExpr();
         if (err_) return;
+        fromExpr = true;
     } else {
-        v = preread;   // READ path supplies the value
+        v = preread;   // READ / INPUT# path supplies the value as text
     }
 
-    if (isStr) {
-        std::string s = v.isStr ? v.str : formatNumber(v.num);
-        if (isArray) { Arr& a = ensureArr(name, true, int(idx.size()));
-            int f = flatIndex(a, idx); if (err_) return; a.s[f] = s; }
-        else setVar(name, true, Value::string(s));
+    const Value fitted = coerce(v, type, !fromExpr);
+    if (err_) return;
+    if (isArray) {
+        Arr& a = ensureArr(name, type, int(idx.size()));
+        const int f = flatIndex(a, idx);
+        if (err_) return;
+        if (type == VT_STR) a.s[f] = fitted.str; else a.num[f] = fitted.num;
     } else {
-        double d = v.isStr ? std::atof(v.str.c_str()) : v.num;
-        if (isArray) { Arr& a = ensureArr(name, false, int(idx.size()));
-            int f = flatIndex(a, idx); if (err_) return; a.num[f] = d; }
-        else setVar(name, false, Value::number(d));
+        setVar(name, type, fitted);
     }
 }
 
@@ -348,14 +377,16 @@ void Basic::stIf() {
 
 void Basic::stFor() {
     skipSpaces();
-    bool isStr = false;
-    std::string name = parseName(isStr);
-    if (isStr) { setError("SYNTAX"); return; }
+    uint8_t type = VT_NUM;
+    std::string name = parseName(type);
+    // Like the original: a loop counter must be plain floating point, so
+    // FOR I%=... and FOR I$=... are both a syntax error.
+    if (type != VT_NUM) { setError("SYNTAX"); return; }
     skipSpaces();
     if (peek() != '=') { setError("SYNTAX"); return; }
     ++pos_;
     Value start = parseExpr(); if (err_) return;
-    setVar(name, false, start);
+    setVar(name, VT_NUM, start);
 
     skipSpaces();
     if (!matchKw("TO")) { setError("SYNTAX"); return; }
@@ -365,14 +396,14 @@ void Basic::stFor() {
     skipSpaces();
     if (matchKw("STEP")) { Value s = parseExpr(); if (err_) return; step = s.num; }
 
-    Var* v = findVar(name.size() ? name[0] : ' ', name.size() > 1 ? name[1] : ' ', false);
+    Var* v = findVar(name.size() ? name[0] : ' ', name.size() > 1 ? name[1] : ' ', VT_NUM);
     int varIdx = v ? int(v - &vars_[0]) : -1;
     forStack_.push_back(ForRec{varIdx, limit.num, step, lineIdx_, pos_});
 }
 
 void Basic::stNext() {
     skipSpaces();
-    if (!atEnd() && std::isalpha((unsigned char)peek())) { bool s; parseName(s); }
+    if (!atEnd() && std::isalpha((unsigned char)peek())) { uint8_t t; parseName(t); }
 
     if (forStack_.empty()) { setError("NEXT WITHOUT FOR"); return; }
     ForRec& f = forStack_.back();
@@ -408,7 +439,8 @@ void Basic::stReturn() {
 
 void Basic::stOn() {
     Value e = parseExpr(); if (err_) return;
-    int sel = int(e.num);
+    const int sel = int(e.num);
+    if (sel < 0) { setError("ILLEGAL QUANTITY"); return; }
     skipSpaces();
     bool sub;
     if (matchKw("GOSUB")) sub = true;
@@ -446,10 +478,10 @@ void Basic::stInput() {
     inTargets_.clear();
     for (;;) {
         skipSpaces();
-        bool isStr = false;
-        std::string name = parseName(isStr);
+        uint8_t type = VT_NUM;
+        std::string name = parseName(type);
         if (name.empty()) { setError("SYNTAX"); return; }
-        inTargets_.push_back(InTarget{name[0], name.size() > 1 ? name[1] : ' ', isStr});
+        inTargets_.push_back(InTarget{name[0], name.size() > 1 ? name[1] : ' ', type});
         skipSpaces();
         if (peek() == ',') { ++pos_; continue; }
         break;
@@ -474,8 +506,8 @@ void Basic::provideInput(const char* text) {
         std::size_t b = f.find_last_not_of(' ');
         f = (a == std::string::npos) ? std::string() : f.substr(a, b - a + 1);
         std::string nm; nm += t.n0; if (t.n1 != ' ') nm += t.n1;
-        if (t.str) setVar(nm, true, Value::string(f));
-        else       setVar(nm, false, Value::number(std::atof(f.c_str())));
+        setVar(nm, t.type, t.type == VT_STR ? Value::string(f)
+                                            : Value::number(std::atof(f.c_str())));
     }
     inTargets_.clear();
     mode_ = Mode::Running;
@@ -483,35 +515,35 @@ void Basic::provideInput(const char* text) {
 
 void Basic::stGet() {
     skipSpaces();
-    bool isStr = false;
-    std::string name = parseName(isStr);
+    uint8_t type = VT_NUM;
+    std::string name = parseName(type);
     if (name.empty()) { setError("SYNTAX"); return; }
 
     uint8_t k = 0;
     if (!getBuf_.empty()) { k = (uint8_t)getBuf_.front(); getBuf_.erase(getBuf_.begin()); }
 
-    if (isStr) setVar(name, true, Value::string(k ? std::string(1, char(k)) : std::string()));
-    else       setVar(name, false, Value::number((k >= '0' && k <= '9') ? k - '0' : 0));
+    if (type == VT_STR) setVar(name, type, Value::string(k ? std::string(1, char(k)) : std::string()));
+    else                setVar(name, type, Value::number((k >= '0' && k <= '9') ? k - '0' : 0));
 }
 
 void Basic::stDim() {
     for (;;) {
         skipSpaces();
-        bool isStr = false;
-        std::string name = parseName(isStr);
+        uint8_t type = VT_NUM;
+        std::string name = parseName(type);
         if (name.empty()) { setError("SYNTAX"); return; }
         skipSpaces();
         if (peek() != '(') { setError("SYNTAX"); return; }
         std::vector<int> sizes = parseIndices();   // these are the max subscripts
         if (err_) return;
         char a = name[0], b = name.size() > 1 ? name[1] : ' ';
-        Arr* existing = findArr(a, b, isStr);
-        if (!existing) {
-            Arr arr; arr.n0 = a; arr.n1 = b; arr.str = isStr;
+        if (findArr(a, b, type)) { setError("REDIM'D ARRAY"); return; }
+        {
+            Arr arr; arr.n0 = a; arr.n1 = b; arr.type = type;
             int total = 1;
             for (int s : sizes) { arr.dim.push_back(s + 1); total *= (s + 1); }
-            if (isStr) arr.s.assign(total, std::string());
-            else       arr.num.assign(total, 0.0);
+            if (type == VT_STR) arr.s.assign(total, std::string());
+            else                arr.num.assign(total, 0.0);
             arrays_.push_back(std::move(arr));
         }
         skipSpaces();
@@ -534,110 +566,6 @@ void Basic::stRead() {
 
 // A filename argument: SAVE "NAME"  /  LOAD "NAME". Upper-cased and clipped to
 // 16 characters, the way a 1541 directory entry works.
-bool Basic::parseFileName(std::string& out) {
-    Value v = parseExpr();
-    if (err_) return false;
-    if (!v.isStr) { setError("TYPE MISMATCH"); return false; }
-    out.clear();
-    for (char c : v.str) {
-        if (out.size() >= 16) break;
-        out += (c >= 'a' && c <= 'z') ? char(c - 32) : c;
-    }
-    if (out.empty()) { setError("MISSING FILE NAME"); return false; }
-    return true;
-}
-
-void Basic::stSave() {
-    std::string name;
-    if (!parseFileName(name)) return;
-    if (!files_) { setError("DEVICE NOT PRESENT"); return; }
-
-    std::string text;
-    for (const auto& ln : lines_) {
-        const std::string num = formatNumber(ln.num);
-        text += num.c_str() + 1;   // drop the sign space
-        text += ' ';
-        text += ln.src;
-        text += '\n';
-    }
-    if (!files_->save(name.c_str(), text)) { setError("DEVICE NOT PRESENT"); return; }
-
-    outText("SAVING ");
-    outText(name);
-    screen_.put(0x0D);
-}
-
-void Basic::stLoad() {
-    std::string name;
-    if (!parseFileName(name)) return;
-    if (!files_) { setError("DEVICE NOT PRESENT"); return; }
-
-    if (name == "$") { directory(); return; }   // LOAD "$" shows the directory
-
-    std::string text;
-    if (!files_->load(name.c_str(), text)) { setError("FILE NOT FOUND"); return; }
-
-    outText("LOADING ");
-    outText(name);
-    screen_.put(0x0D);
-
-    lines_.clear();
-    clearVars();
-    std::size_t i = 0;
-    while (i < text.size()) {
-        std::size_t e = text.find('\n', i);
-        if (e == std::string::npos) e = text.size();
-        std::string row = text.substr(i, e - i);
-        i = e + 1;
-        std::size_t p = 0;
-        while (p < row.size() && row[p] == ' ') ++p;
-        if (p >= row.size() || !std::isdigit((unsigned char)row[p])) continue;
-        int num = 0;
-        while (p < row.size() && std::isdigit((unsigned char)row[p]))
-            num = num * 10 + (row[p++] - '0');
-        storeLine(num, row.substr(p));
-    }
-}
-
-void Basic::stScratch() {
-    std::string name;
-    if (!parseFileName(name)) return;
-    if (!files_) { setError("DEVICE NOT PRESENT"); return; }
-    if (!files_->remove(name.c_str())) { setError("FILE NOT FOUND"); return; }
-    outText("SCRATCHED ");
-    outText(name);
-    screen_.put(0x0D);
-}
-
-// A 1541-style listing: header line, one entry per program with its size in
-// 254-byte blocks, then the free space.
-void Basic::directory() {
-    if (!files_) { setError("DEVICE NOT PRESENT"); return; }
-    std::vector<Files::Entry> entries;
-    if (!files_->list(entries)) { setError("DEVICE NOT PRESENT"); return; }
-
-    {
-        char hdr[48];
-        std::snprintf(hdr, sizeof hdr, "0 \"GHOST BASIC\"     %s 2A", files_->volumeId());
-        outText(hdr);
-    }
-    screen_.put(0x0D);
-    for (const auto& e : entries) {
-        const uint32_t blocks = (e.size + 253) / 254;
-        char buf[48];
-        std::snprintf(buf, sizeof buf, "%-4u \"%s\"", unsigned(blocks), e.name.c_str());
-        outText(buf);
-        int pad = 28 - int(std::strlen(buf));
-        for (int i = 0; i < pad; ++i) outChar(' ');
-        outText("PRG");
-        screen_.put(0x0D);
-    }
-    char buf[40];
-    std::snprintf(buf, sizeof buf, "%u BLOCKS FREE.", unsigned(files_->freeBytes() / 254));
-    outText(buf);
-    screen_.put(0x0D);
-}
-
 void Basic::stPoke() {
     Value addr = parseExpr(); if (err_) return;
     skipSpaces();
@@ -645,6 +573,77 @@ void Basic::stPoke() {
     ++pos_;
     Value val = parseExpr(); if (err_) return;
     pokeMem(int(addr.num), uint8_t(int(val.num) & 0xFF));
+}
+
+
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// reserved variables: TI, TI$, FRE
+// ---------------------------------------------------------------------------
+
+// The jiffy clock ticks 60 times a second and wraps after 24 hours, like the
+// original. It runs off the millis() the app feeds in, so nothing here needs a
+// clock of its own.
+long Basic::jiffies() const {
+    const long running = long((uint64_t(nowMs_) * 60) / 1000);
+    long t = (running + tiOffset_) % 5184000L;      // 24 h in jiffies
+    if (t < 0) t += 5184000L;
+    return t;
+}
+
+std::string Basic::timeString() const {
+    const long secs = jiffies() / 60;
+    char buf[8];
+    std::snprintf(buf, sizeof buf, "%02ld%02ld%02ld",
+                  (secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+    return buf;
+}
+
+void Basic::setTimeString(const std::string& hhmmss) {
+    if (hhmmss.size() != 6) { setError("ILLEGAL QUANTITY"); return; }
+    for (char c : hhmmss) if (!std::isdigit((unsigned char)c)) { setError("ILLEGAL QUANTITY"); return; }
+    const long h = std::atol(hhmmss.substr(0, 2).c_str());
+    const long m = std::atol(hhmmss.substr(2, 2).c_str());
+    const long sec = std::atol(hhmmss.substr(4, 2).c_str());
+    const long want = ((h * 3600) + (m * 60) + sec) * 60;
+    tiOffset_ = want - long((uint64_t(nowMs_) * 60) / 1000);
+}
+
+// What is left of the 38911 bytes the boot screen advertises. The original
+// returns this through a signed 16-bit register, so anything above 32767 comes
+// back negative and you add 65536 — a quirk every C64 programmer knows.
+long Basic::freeBytes() const {
+    long used = 0;
+    for (const auto& ln : lines_) used += long(ln.src.size()) + 5;
+    for (const auto& v : vars_) used += 7 + long(v.val.str.size());
+    for (const auto& a : arrays_) {
+        long cells = 1;
+        for (int d : a.dim) cells *= d;
+        used += 5 + cells * (a.type == VT_STR ? 3 : 5);
+        for (const auto& str : a.s) used += long(str.size());
+    }
+    long free = 38911 - used;
+    if (free < 0) free = 0;
+    if (free > 32767) free -= 65536;      // the signed-16-bit quirk
+    return free;
+}
+
+// WAIT addr, mask [,xor] — spin until (PEEK(addr) XOR xor) AND mask is set.
+// Instead of blocking, it rewinds to the start of the statement so the stepped
+// run loop keeps its budget and RUN/STOP still works.
+void Basic::stWait() {
+    Value addr = parseExpr(); if (err_) return;
+    skipSpaces();
+    if (peek() != ',') { setError("SYNTAX"); return; }
+    ++pos_;
+    Value mask = parseExpr(); if (err_) return;
+    int flip = 0;
+    skipSpaces();
+    if (peek() == ',') { ++pos_; Value x = parseExpr(); if (err_) return; flip = int(x.num); }
+
+    const int v = (peekMem(int(addr.num)) ^ (flip & 0xFF)) & (int(mask.num) & 0xFF);
+    if (v == 0) pos_ = stmtStart_;   // not yet: run the whole statement again
 }
 
 // ---------------------------------------------------------------------------
@@ -656,6 +655,7 @@ constexpr int SCREEN_RAM = 1024;    // $0400, 40x25 screen codes
 constexpr int COLOR_RAM  = 55296;   // $D800, one colour nibble per cell
 constexpr int VIC_BORDER = 53280;   // $D020
 constexpr int VIC_BG     = 53281;   // $D021
+constexpr int SID_BASE   = 54272;   // $D400, 29 registers
 }
 
 void Basic::pokeMem(int addr, uint8_t value) {
@@ -668,6 +668,8 @@ void Basic::pokeMem(int addr, uint8_t value) {
         screen_.setBorder(value);
     } else if (addr == VIC_BG) {
         screen_.setBackground(value);
+    } else if (addr >= SID_BASE && addr < SID_BASE + Sid::NUM_REGS) {
+        if (sid_) sid_->write(addr - SID_BASE, value);
     } else if (ram_) {
         ram_[addr] = value;
     }
@@ -683,6 +685,10 @@ uint8_t Basic::peekMem(int addr) const {
     // 0..15 so POKE 53280,PEEK(53280)+1 cycles colours the obvious way.
     if (addr == VIC_BORDER) return screen_.border();
     if (addr == VIC_BG)     return screen_.background();
+    // Only the two oscillator taps read back; the rest of the SID is
+    // write-only and answers 0, exactly like the chip.
+    if (addr >= SID_BASE && addr < SID_BASE + Sid::NUM_REGS)
+        return sid_ ? sid_->read(addr - SID_BASE) : 0;
     return ram_ ? ram_[addr] : 0;
 }
 
@@ -690,13 +696,13 @@ void Basic::stDef() {
     skipSpaces();
     if (!matchKw("FN")) { setError("SYNTAX"); return; }
     skipSpaces();
-    bool s = false;
-    std::string name = parseName(s);
+    uint8_t t = VT_NUM;
+    std::string name = parseName(t);
     skipSpaces();
     if (peek() != '(') { setError("SYNTAX"); return; }
     ++pos_;
-    bool ps = false;
-    std::string param = parseName(ps);
+    uint8_t pt = VT_NUM;
+    std::string param = parseName(pt);
     skipSpaces();
     if (peek() != ')') { setError("SYNTAX"); return; }
     ++pos_;
@@ -746,7 +752,24 @@ bool Basic::readData(std::string& out) {
 // output
 // ---------------------------------------------------------------------------
 
-void Basic::outChar(char c) { screen_.put(uint8_t(c)); }
+void Basic::outChar(char c) {
+    if (printTo_ >= 0) {
+        if (OpenFile* f = findFile(printTo_)) { f->buf += c; return; }
+    }
+    screen_.put(uint8_t(c));
+}
+
+// Column of whatever output is currently active, so PRINT's comma zones work
+// the same whether the text lands on the screen or in a file.
+int Basic::outColumn() {
+    if (printTo_ >= 0) {
+        if (OpenFile* f = findFile(printTo_)) {
+            const std::size_t nl = f->buf.rfind('\r');
+            return int(nl == std::string::npos ? f->buf.size() : f->buf.size() - nl - 1);
+        }
+    }
+    return screen_.cursorX();
+}
 void Basic::outText(const char* s) { while (*s) outChar(*s++); }
 
 std::string Basic::formatNumber(double v) {

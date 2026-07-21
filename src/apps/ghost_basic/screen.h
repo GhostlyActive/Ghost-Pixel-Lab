@@ -4,8 +4,11 @@
 // one place that turns the matrix into pixels, so the model stays testable and
 // the renderer stays swappable.
 //
-// Control codes understood by put(): 0x0D (RETURN -> new line), 0x14 (DELETE
-// -> backspace). Everything else prints via the PETSCII->screen-code map.
+// put() understands the PETSCII control codes a C64 program embeds in strings:
+// RETURN, DELETE, CLR/HOME, the four cursor moves, reverse-video on/off and all
+// sixteen colour codes. That is what makes PRINT CHR$(147) clear the screen and
+// PRINT CHR$(28);"..." come out red. Everything else prints through the
+// PETSCII->screen-code map.
 #pragma once
 
 #include "board/surface.h"
@@ -39,7 +42,9 @@ public:
     uint8_t textColor() const        { return text_; }
 
     // Printing.
-    void put(uint8_t petscii);                 // one char or control code
+    // fromKeyboard caps a typed line at the 80-character logical line; program
+    // output passes false and wraps across as many rows as it needs.
+    void put(uint8_t petscii, bool fromKeyboard = false);
     void print(const char* s);                 // convenience for banners
     void newLine();
 
@@ -82,6 +87,7 @@ private:
     uint8_t color_[ROWS * COLS] = {};  // colour RAM, 0..15
     bool    cont_[ROWS] = {};          // row continues the logical line above it
     int     cx_ = 0, cy_ = 0;          // cursor cell
+    bool    reverse_ = false;          // RVS mode, cleared by RETURN like the original
     uint8_t text_   = COL_LTBLUE;      // current text colour
     uint8_t bg_     = COL_BLUE;        // global background
     uint8_t border_ = COL_LTBLUE;      // border

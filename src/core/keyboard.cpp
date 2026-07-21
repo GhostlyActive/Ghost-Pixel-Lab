@@ -54,8 +54,10 @@ char          s_candAddrStr[20] = {0};
 char          s_candName[26] = {0};
 uint8_t       s_candType = 0;
 
-// Decoded-key ring buffer.
-constexpr int RING = 32;
+// Decoded-key ring buffer. Big enough to swallow a whole pasted program line
+// in one frame: the serial console delivers a paste far faster than the app
+// loop consumes it, and anything that does not fit is gone (see drainSerial).
+constexpr int RING = 256;
 uint8_t       s_ring[RING];
 volatile int  s_head = 0, s_tail = 0;
 
@@ -119,6 +121,18 @@ void ringPush(uint8_t k) {
     xSemaphoreGive(s_lock);
 }
 
+// Free slots. Only the serial path asks: a byte pulled out of the UART with
+// nowhere to put it is lost for good, while one left in the driver's buffer
+// simply arrives a frame later. The BLE task shares the ring, so this is a
+// hint rather than a reservation — but a keypress and a paste racing for the
+// last slot is the old behaviour at worst, not a new failure.
+int ringSpace() {
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const int used = (s_head - s_tail + RING) % RING;
+    xSemaphoreGive(s_lock);
+    return RING - 1 - used;
+}
+
 uint8_t decode(uint8_t u, bool shift) {
     if (u >= 0x04 && u <= 0x1D) return uint8_t('A' + (u - 0x04));
     switch (u) {
@@ -146,7 +160,7 @@ uint8_t decode(uint8_t u, bool shift) {
     case 0x36: return shift ? '<' : ',';
     case 0x37: return shift ? '>' : '.';
     case 0x38: return shift ? '?' : '/';
-    case 0x4A: return 0x13;               // Home
+    case 0x4A: return shift ? 0x93 : 0x13;   // CLR/HOME: shifted clears the screen
     case 0x4F: return 0x1D;               // Right
     case 0x50: return 0x9D;               // Left
     case 0x51: return 0x11;               // Down
@@ -390,7 +404,10 @@ bool connected() { return s_connected; }
 // our RUN/STOP code, so it needs no translation.
 void drainSerial() {
     static int esc = 0;   // 0 = normal, 1 = saw ESC, 2 = saw ESC '['
-    while (Serial.available()) {
+    // Stop at a full ring instead of reading on and dropping the overflow: a
+    // pasted program arrives in one burst, and silently losing the tail of a
+    // line produces a syntax error in source that looks perfectly correct.
+    while (Serial.available() && ringSpace() > 0) {
         const int c = Serial.read();
         if (c < 0) break;
 

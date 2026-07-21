@@ -37,6 +37,18 @@ inline void fillL(board::gfx::Surface& s, int lx, int ly, int w, int h, uint16_t
     else                     s.fillRect(lx, ly, w, h, c);
 }
 
+// The sixteen PETSCII colour codes, in the order the C64 assigns them to the
+// CTRL and Commodore number keys. -1 means "not a colour code".
+int colorForCode(uint8_t c) {
+    switch (c) {
+    case 144: return 0;   case   5: return 1;   case  28: return 2;   case 159: return 3;
+    case 156: return 4;   case  30: return 5;   case  31: return 6;   case 158: return 7;
+    case 129: return 8;   case 149: return 9;   case 150: return 10;  case 151: return 11;
+    case 152: return 12;  case 153: return 13;  case 154: return 14;  case 155: return 15;
+    default:  return -1;
+    }
+}
+
 // Screen code -> PETSCII, for reading a line back off the screen. Shared by
 // readLine and readLogicalLine so the mapping can never drift between them.
 // Note screen code 30 is the up-arrow, which is BASIC's exponent operator '^'.
@@ -61,6 +73,7 @@ void Screen::reset() {
     }
     for (int r = 0; r < ROWS; ++r) cont_[r] = false;
     cx_ = cy_ = 0;
+    reverse_ = false;
 }
 
 void Screen::setCursor(int x, int y) {
@@ -103,9 +116,10 @@ void Screen::newLine() {
     cont_[cy_] = false;   // an explicit new line starts a fresh logical line
 }
 
-void Screen::put(uint8_t c) {
+void Screen::put(uint8_t c, bool fromKeyboard) {
     switch (c) {
-    case 0x0D:  // RETURN
+    case 0x0D:  // RETURN — also cancels reverse mode, like the original
+        reverse_ = false;
         newLine();
         return;
     case 0x14:  // DELETE / backspace
@@ -116,17 +130,42 @@ void Screen::put(uint8_t c) {
         }
         poke(cx_, cy_, 32, text_);
         return;
+    case 0x93:  // CLR — wipe the screen and go home
+        reset();
+        return;
+    case 0x13:  // HOME
+        home();
+        return;
+    case 0x12: reverse_ = true;  return;   // RVS ON
+    case 0x92: reverse_ = false; return;   // RVS OFF
+    case 0x11: setCursor(cx_, cy_ + 1); return;   // cursor down
+    case 0x91: setCursor(cx_, cy_ - 1); return;   // cursor up
+    case 0x1D:                                    // cursor right, wrapping
+        if (cx_ + 1 >= COLS) setCursor(0, cy_ + 1); else setCursor(cx_ + 1, cy_);
+        return;
+    case 0x9D:                                    // cursor left, wrapping
+        if (cx_ == 0) setCursor(COLS - 1, cy_ - 1); else setCursor(cx_ - 1, cy_);
+        return;
     default:
         break;
     }
 
-    poke(cx_, cy_, petscii::toScreenCode(c), text_);
+    if (const int col = colorForCode(c); col >= 0) { text_ = uint8_t(col); return; }
+
+    poke(cx_, cy_, uint8_t(petscii::toScreenCode(c) | (reverse_ ? 0x80 : 0x00)), text_);
     if (++cx_ >= COLS) {
-        // Auto-wrap: link the next row to this one, but cap a logical line at
-        // two physical rows (so a 3rd wrapped row begins a new logical line).
-        const bool link = !cont_[cy_];
-        newLine();
-        cont_[cy_] = link;
+        if (fromKeyboard && cont_[cy_]) {
+            // Second row of a logical line is full: 80 characters is the limit.
+            // Moving to a third row here would strand the line, because RETURN
+            // reads the line the cursor is on and that row is a fresh one.
+            cx_ = COLS - 1;
+        } else {
+            // Auto-wrap: link the next row to this one, but cap a logical line
+            // at two rows so a third wrapped row starts a new one.
+            const bool link = !cont_[cy_];
+            newLine();
+            cont_[cy_] = link;
+        }
     }
 }
 

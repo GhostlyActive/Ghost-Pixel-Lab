@@ -26,7 +26,10 @@ bool Editor::key(uint8_t k, char* outLine, int outSize) {
     }
     case KEY_CRSR_LEFT: {
         int x = screen_.cursorX() - 1, y = screen_.cursorY();
-        if (x < 0) { x = Screen::COLS - 1; --y; }
+        if (x < 0) {
+            if (y == 0) return false;         // already home: stay put
+            x = Screen::COLS - 1; --y;
+        }
         screen_.setCursor(x, y);
         return false;
     }
@@ -46,7 +49,7 @@ bool Editor::key(uint8_t k, char* outLine, int outSize) {
 
     default:
         // Printable characters echo to the screen and advance the cursor.
-        if (k >= 0x20 && k < 0x80) screen_.put(k);
+        if (k >= 0x20 && k < 0x80) screen_.put(k, true);
         return false;
     }
 }

@@ -42,6 +42,7 @@ device's screen. `Ctrl+C` acts as RUN/STOP.
 | Arrow keys | Move the cursor |
 | `Esc` / `Ctrl+C` / BOOT button | **RUN/STOP** — aborts a running program |
 | `Home` | Move the cursor to the top left |
+| `Shift+Home` | **CLR** — wipe the screen, cursor home (the C64's `SHIFT+CLR/HOME`) |
 
 The character set is uppercase (just like a powered-on C64). Whatever you type
 appears in uppercase.
@@ -93,8 +94,14 @@ re-reads **the whole line the cursor is currently on**. That means:
 
 - **Numbers:** `A`, `X`, `NUMBER` — floating point.
 - **Strings:** end with `$` — `A$`, `NAME$`.
+- **Integers:** end with `%` — `A%`. Values are truncated toward zero and must
+  stay in −32768…32767, otherwise `?ILLEGAL QUANTITY ERROR`.
 - Only the **first two characters** are significant: `COUNT` and `COUNTER` are
-  the same variable.
+  the same variable. Flavour counts too, so `A`, `A$` and `A%` are three
+  different variables.
+
+Like the original, a `FOR` counter has to be floating point — `FOR I%=1 TO 10`
+is a `?SYNTAX ERROR`.
 
 ```basic
 10 A = 5
@@ -121,6 +128,41 @@ PRINT "X ="; X
 PRINT "A", "B", "C"
 PRINT TAB(10); "INDENTED"
 ```
+
+### Control codes
+
+A C64 program steers the screen by embedding control characters in the strings
+it prints, and `CHR$()` produces them:
+
+| Code | Effect |
+|------|--------|
+| `CHR$(147)` | clear the screen and go home |
+| `CHR$(19)` | cursor home |
+| `CHR$(17)` `CHR$(145)` | cursor down / up |
+| `CHR$(29)` `CHR$(157)` | cursor right / left |
+| `CHR$(18)` `CHR$(146)` | reverse video on / off |
+
+The sixteen colours, in the order the original puts them on the number keys:
+
+| Colour | Code | | Colour | Code |
+|--------|------|-|--------|------|
+| black | `144` | | orange | `129` |
+| white | `5` | | brown | `149` |
+| red | `28` | | light red | `150` |
+| cyan | `159` | | dark grey | `151` |
+| purple | `156` | | grey | `152` |
+| green | `30` | | light green | `153` |
+| blue | `31` | | light blue | `154` |
+| yellow | `158` | | light grey | `155` |
+
+```basic
+10 PRINT CHR$(147)
+20 PRINT CHR$(28);"RED ";CHR$(30);"GREEN ";CHR$(158);"YELLOW"
+30 PRINT CHR$(18);"REVERSE";CHR$(146);" NORMAL"
+```
+
+A colour stays in effect until the next colour code, across `PRINT` statements.
+Reverse mode is cancelled by `RETURN`, exactly like the original.
 
 ### Branches and loops
 
@@ -223,6 +265,45 @@ Old listings from books and magazines therefore work the way they were meant to.
 > the unused top bits as ones (240 + colour), which would make
 > `POKE 53280,PEEK(53280)+1` useless for cycling colours.
 
+### Sound: the SID
+
+Three voices live at 54272 upwards, at the original addresses. `S=54272` and
+then offsets is how every listing does it:
+
+| Offset | Register |
+|--------|----------|
+| `S+0` `S+1` | voice 1 frequency, low and high byte |
+| `S+2` `S+3` | pulse width, low and high |
+| `S+4` | waveform + gate (see below) |
+| `S+5` | attack (high nibble) / decay (low nibble) |
+| `S+6` | sustain (high) / release (low) |
+| `S+7`… | voice 2, same seven registers; `S+14`… voice 3 |
+| `S+24` | master volume, 0–15 |
+| `S+27` | voice 3 oscillator output — the classic random-number source |
+
+Waveform bits for `S+4`: `16` triangle, `32` sawtooth, `64` pulse, `128` noise.
+Add `1` to open the gate and start the note, clear it to release.
+
+```basic
+10 S=54272
+20 POKE S+24,15            : REM volume up
+30 POKE S+5,9              : REM quick attack, short decay
+40 POKE S+6,0              : REM no sustain — a plucked sound
+50 POKE S+1,25 : POKE S,177: REM about 386 Hz
+60 POKE S+4,33             : REM sawtooth + gate on
+70 FOR T=1 TO 300 : NEXT
+80 POKE S+4,32             : REM gate off, let it release
+```
+
+Ring modulation (`+4` on the control register) and oscillator sync (`+2`) work
+and read the neighbouring voice, so the metallic and hard-sync timbres come out.
+`PEEK(S+27)` returns the voice 3 oscillator, which listings use as a random
+source — set voice 3 to noise and read it.
+
+> The analogue filter is not modelled. Its cutoff varied so wildly between chips
+> that no two C64s sounded the same, and a poor imitation would cost more
+> character than leaving it out.
+
 ### Built-in functions
 
 | Numbers | Meaning |
@@ -233,6 +314,8 @@ Old listings from books and magazines therefore work the way they were meant to.
 | `EXP(x)` `LOG(x)` | Exponential, natural logarithm |
 | `RND(x)` | Random number 0…1 |
 | `PEEK(a)` | Read memory |
+| `FRE(x)` | Free bytes (see below) |
+| `POS(x)` | Current cursor column |
 
 | Strings | Meaning |
 |---------|---------|
@@ -245,6 +328,28 @@ Old listings from books and magazines therefore work the way they were meant to.
 | `VAL(a$)` | String → number |
 
 Random number in the range 1…100: `INT(RND(1) * 100) + 1`.
+
+### Reserved variables
+
+| Name | Meaning |
+|------|---------|
+| `TI` | Jiffy clock — 1/60 s ticks, wraps after 24 h. Read-only. |
+| `TI$` | The same clock as `"HHMMSS"`. Assign to it to set the time. |
+| `ST` | Status of the last I/O operation. Always 0 for now. |
+
+```basic
+10 TI$="000000"
+20 FOR I=1 TO 1000 : NEXT
+30 PRINT "THAT TOOK";TI;"JIFFIES"
+```
+
+`FRE(0)` reports the free part of the advertised 38911 bytes — and reproduces
+the original's most notorious quirk: the value comes back through a signed
+16-bit register, so an almost empty machine reports a **negative** number. Add
+65536 to get the real figure.
+
+`WAIT addr, mask [,xor]` pauses until `(PEEK(addr) XOR xor) AND mask` is
+non-zero. RUN/STOP still breaks out of it.
 
 ---
 
@@ -273,6 +378,48 @@ The volume id tells you where programs really go: **FL** = internal flash,
 
 Filenames are upper-cased and truncated to 16 characters, just like the
 original. A missing file gives `?FILE NOT FOUND ERROR`.
+
+### Data files
+
+Beyond whole programs, a file can be opened as a stream of lines:
+
+```basic
+10 OPEN 1,8,2,"SCORES,S,W"     : REM S,W = sequential, write
+20 PRINT#1,"MARLON"
+30 PRINT#1,9500
+40 CLOSE 1
+50 OPEN 1,8,2,"SCORES,S,R"     : REM S,R = read
+60 INPUT#1,N$
+70 INPUT#1,P
+80 CLOSE 1
+90 PRINT N$;" SCORED";P
+```
+
+| Statement | Meaning |
+|-----------|---------|
+| `OPEN lf,dev,sa,"NAME,S,W"` | open logical file *lf* for writing |
+| `OPEN lf,dev,sa,"NAME,S,R"` | open it for reading |
+| `PRINT# lf, …` | like `PRINT`, but into the file |
+| `INPUT# lf, vars` | read one line, split on commas |
+| `GET# lf, a$` | read a single character |
+| `CMD lf` | send *all* `PRINT` output to the file until `CLOSE` |
+| `CLOSE lf` | close it — a write file is only saved here |
+| `VERIFY "NAME"` | compare the program in memory with the file |
+
+`ST` becomes **64** once a read passes the end of the file, which is the usual
+way to stop:
+
+```basic
+10 OPEN 1,8,2,"SCORES,S,R"
+20 INPUT#1,A$ : PRINT A$
+30 IF ST=0 THEN 20
+40 CLOSE 1
+```
+
+The device and secondary-address numbers are accepted and ignored — there is
+one drive here — so `LOAD "NAME",8` and `SAVE "NAME",8,1` work as written. A
+write file is held in memory and flushed on `CLOSE`, so a program that forgets
+to close loses that file.
 
 The rest of the layout, shared by every app: `/GHOST/DATA` for app data,
 `/GHOST/SYS` for settings (including the paired keyboard), `/GHOST/APPS` with
@@ -336,7 +483,11 @@ number of programs — and can format the card.
 ERROR` · `?UNDEF'D STATEMENT ERROR` (unknown line number) · `?NEXT WITHOUT FOR
 ERROR` · `?RETURN WITHOUT GOSUB ERROR` · `?OUT OF DATA ERROR` · `?BAD SUBSCRIPT
 ERROR` (array index too large) · `?TYPE MISMATCH ERROR` (number/string mixed up)
-· `?FILE NOT FOUND ERROR` · `?DEVICE NOT PRESENT ERROR` (no storage found).
+· `?FILE NOT FOUND ERROR` · `?DEVICE NOT PRESENT ERROR` (no storage found) ·
+`?ILLEGAL QUANTITY ERROR` (a value outside what the function accepts, e.g.
+`SQR(-1)`, `LOG(0)`, `ASC("")`, `MID$(a$,0)`) · `?OVERFLOW ERROR` ·
+`?REDIM'D ARRAY ERROR` (dimensioning the same array twice) · `?FILE OPEN ERROR`
+· `?FILE NOT OPEN ERROR` · `?UNDEF'D FUNCTION ERROR`.
 
 While a program runs, `IN <line>` is appended. `STOP` interrupts, `CONT` resumes.
 
@@ -346,16 +497,13 @@ While a program runs, `IN <line>` is appended. `STOP` interrupts, `CONT` resumes
 
 So you don't go looking for them — these original features are still missing:
 
-- **Sound (SID).** The registers at 54272+ are plain RAM; nothing is audible.
 - **Sprites and bitmap modes.** Screen memory, colour RAM and the two colour
   registers are mapped; the rest of the VIC-II is not.
+- **The SID's filter** — see the note above.
 - **The lowercase character set** and the Shift+Commodore switch between the
   two sets. The graphics half is there: all 128 screen codes are drawn, and
   bit 7 gives reverse video, so `POKE 1024,81+128` prints a reversed circle.
-- **Control codes inside PRINT**, such as `CHR$(147)` to clear the screen or
-  `CHR$(5)` to change colour mid-string.
-- Integer variables `A%`, the jiffy clock `TI`/`TI$`, `SYS`, `WAIT`, `USR`, and
-  file I/O beyond SAVE/LOAD (`OPEN`/`CLOSE`/`PRINT#`).
+- `SYS` and `USR` — they call machine code, and there is no 6502 here by choice.
 
 The core for writing small applications — maths, text, branching, loops, I/O,
 arrays, data, subroutines, custom functions and poking the screen — is complete.

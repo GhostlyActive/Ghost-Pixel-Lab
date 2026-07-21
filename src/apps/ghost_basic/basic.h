@@ -11,6 +11,7 @@
 #pragma once
 
 #include "screen.h"
+#include "sid.h"
 
 #include <cstdint>
 #include <string>
@@ -39,6 +40,9 @@ public:
     ~Basic();
 
     void setFiles(Files* f) { files_ = f; }
+    // The sound chip lives in the app so it can also drive the speaker; POKEs
+    // to 54272.. are routed here.
+    void setSid(Sid* s) { sid_ = s; }
 
     enum class Mode { Idle, Running, Input };
 
@@ -51,6 +55,9 @@ public:
     void provideInput(const char* text); // Input: the user submitted a line
     void pushKey(uint8_t petscii);    // Running: feed the GET buffer
     void breakRun();                  // RUN/STOP pressed
+    // Drives TI / TI$. The app feeds it millis() once per frame; the host
+    // tests set it by hand, which keeps this file free of any clock source.
+    void setMillis(uint32_t ms) { nowMs_ = ms; }
     void poll();                      // advance one frame's worth of work
 
 private:
@@ -64,14 +71,32 @@ private:
     };
 
     // ---- storage -------------------------------------------------------
+    // A bare name is floating point, a trailing $ makes it a string and a
+    // trailing % an integer — the three flavours the original knows. Name,
+    // flavour and array-ness together identify a variable, so A, A$, A% and
+    // A(0) can all coexist.
+    enum VarType : uint8_t { VT_NUM = 0, VT_STR = 1, VT_INT = 2 };
+
     struct Line { int num; std::string src; };
-    struct Var  { char n0, n1; bool str; Value val; };
-    struct Arr  { char n0, n1; bool str; std::vector<int> dim;
+    struct Var  { char n0, n1; uint8_t type; Value val; };
+    struct Arr  { char n0, n1; uint8_t type; std::vector<int> dim;
                   std::vector<double> num; std::vector<std::string> s; };
     struct Fn   { char n0, n1; std::string param, expr; };
     struct ForRec { int varIdx; double limit, step; int line; std::size_t pos; };
     struct SubRec { int line; std::size_t pos; };
-    struct InTarget { char n0, n1; bool str; };
+    struct InTarget { char n0, n1; uint8_t type; };
+
+    // An OPENed logical file. Contents live in one buffer: a read file is
+    // slurped on OPEN, a write file is flushed on CLOSE. Programs of the size
+    // this machine runs never need streaming, and it keeps the Files interface
+    // to four plain methods.
+    struct OpenFile {
+        int  lf = 0, dev = 8, sa = 0;
+        bool write = false, used = false;
+        std::string name, buf;
+        std::size_t pos = 0;
+    };
+    static constexpr int MAX_FILES = 8;
 
     // ---- program management -------------------------------------------
     void storeLine(int num, const std::string& src);
@@ -83,13 +108,19 @@ private:
     void loadLine();
     void execStatement();
     void finishRun();                 // print READY. and go Idle
-    void doBreak(bool stopKeyword);   // STOP / RUN-STOP: print BREAK, save CONT
+    void doBreak();                   // STOP / RUN-STOP: print BREAK, save CONT
 
     void stPrint(); void stIf(); void stFor(); void stNext();
     void stGoto(); void stGosub(); void stReturn(); void stOn();
     void stInput(); void stGet(); void stDim(); void stRead();
-    void stPoke(); void stDef(); void stAssign(bool letSeen);
+    void stPoke(); void stDef(); void stAssign();
     void stSave(); void stLoad(); void stScratch(); void directory();
+    void stWait();
+    void stOpen(); void stClose(); void stPrintFile(); void stInputFile();
+    void stGetFile(); void stCmd(); void stVerify();
+    OpenFile* findFile(int lf);
+    void      skipDeviceSuffix();     // the ",8" / ",8,1" after a file name
+    int       outColumn();            // column of whatever output is active
     bool parseFileName(std::string& out);
 
     // ---- expressions ---------------------------------------------------
@@ -102,16 +133,25 @@ private:
     static bool isFunction(const std::string& name);
 
     // ---- variables & arrays -------------------------------------------
-    Var*  findVar(char a, char b, bool str);
-    Value getVar(const std::string& name, bool str);
-    void  setVar(const std::string& name, bool str, const Value& v);
-    Arr*  findArr(char a, char b, bool str);
-    Arr&  ensureArr(const std::string& name, bool str, int ndims);
+    Var*  findVar(char a, char b, uint8_t type);
+    Value getVar(const std::string& name, uint8_t type);
+    void  setVar(const std::string& name, uint8_t type, const Value& v);
+    Arr*  findArr(char a, char b, uint8_t type);
+    Arr&  ensureArr(const std::string& name, uint8_t type, int ndims);
+    // Fit a value to a variable's flavour: integers truncate toward zero and
+    // must stay in -32768..32767, strings and floats pass through.
+    Value coerce(const Value& v, uint8_t type, bool lenient);
     std::vector<int> parseIndices();
     int   flatIndex(const Arr& a, const std::vector<int>& idx);
-    Value getArr(const std::string& name, bool str);
+    Value getArr(const std::string& name, uint8_t type);
     void  assignTarget(const Value& v);  // parse a scalar/array lvalue and store
     void  clearVars();
+
+    // ---- reserved variables --------------------------------------------
+    long        jiffies() const;          // TI: 1/60 s since the clock was set
+    std::string timeString() const;       // TI$: "HHMMSS"
+    void        setTimeString(const std::string& hhmmss);
+    long        freeBytes() const;        // FRE: what is left of 38911
 
     // ---- memory map ----------------------------------------------------
     // POKE/PEEK are a real address bus: the screen, colour RAM and the two VIC
@@ -130,7 +170,7 @@ private:
     char        peek() const;
     bool        matchKw(const char* kw);
     bool        parseLineNumber(int& out);
-    std::string parseName(bool& isStr);
+    std::string parseName(uint8_t& type);
 
     // ---- output --------------------------------------------------------
     void outChar(char c);
@@ -154,6 +194,7 @@ private:
     std::string directText_;
     const char* src_ = nullptr;
     std::size_t pos_ = 0, len_ = 0;
+    std::size_t stmtStart_ = 0;       // where the current statement began
     int  lineIdx_ = -1;               // -1 = direct mode
     Mode mode_    = Mode::Idle;
     const char* err_ = nullptr;
@@ -176,8 +217,19 @@ private:
     bool dataInStmt_ = false;
 
     Files*   files_ = nullptr;        // SAVE / LOAD backend, null = no drive
+    Sid*     sid_   = nullptr;        // sound chip at 54272, null = silent
     uint8_t* ram_ = nullptr;          // 64K for POKE/PEEK (+ future HW mapping)
     uint32_t rngState_ = 0x1234567u;
+
+    // Open files, PRINT redirection and the I/O status behind ST.
+    OpenFile openFiles_[MAX_FILES];
+    int printTo_ = -1;     // logical file PRINT writes to, -1 = the screen
+    int cmdLf_   = -1;     // CMD redirection, cleared by CLOSE
+    int st_      = 0;      // ST: 64 after reading past the end
+
+    // Jiffy clock behind TI / TI$.
+    uint32_t nowMs_ = 0;
+    long     tiOffset_ = 0;   // jiffies added on top of the running millis()
 };
 
 } // namespace apps::ghost

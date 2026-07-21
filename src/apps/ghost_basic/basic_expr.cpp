@@ -112,17 +112,23 @@ Basic::Value Basic::parsePrimary() {
         const char* start = src_ + pos_; char* end = nullptr;
         double d = std::strtod(start, &end);
         pos_ += std::size_t(end - start); return Value::number(d); }
-    if (matchKw("FN")) { skipSpaces(); bool s; std::string nm = parseName(s); return callFn(nm); }
+    if (matchKw("FN")) { skipSpaces(); uint8_t t; std::string nm = parseName(t); return callFn(nm); }
     if (std::isalpha((unsigned char)c)) {
-        bool isStr = false;
-        std::string name = parseName(isStr);
-        const std::string fname = isStr ? name + "$" : name;   // functions keep the $
+        uint8_t type = VT_NUM;
+        std::string name = parseName(type);
+
+        // Reserved variables, read-only: the jiffy clock and the I/O status.
+        if (name == "TI" && type == VT_NUM) return Value::number(double(jiffies()));
+        if (name == "TI" && type == VT_STR) return Value::string(timeString());
+        if (name == "ST" && type == VT_NUM) return Value::number(st_);  // 64 == end of file
+
+        const std::string fname = type == VT_STR ? name + "$" : name;  // functions keep the $
         skipSpaces();
         if (peek() == '(') {
             if (isFunction(fname)) return callFunction(fname);
-            return getArr(name, isStr);
+            return getArr(name, type);
         }
-        return getVar(name, isStr);
+        return getVar(name, type);
     }
     setError("SYNTAX");
     return Value::number(0);
@@ -130,7 +136,7 @@ Basic::Value Basic::parsePrimary() {
 
 bool Basic::isFunction(const std::string& n) {
     static const char* F[] = {"ABS","INT","SGN","SQR","SIN","COS","TAN","ATN","EXP",
-        "LOG","RND","LEN","ASC","VAL","PEEK","CHR$","STR$","LEFT$","RIGHT$","MID$"};
+        "LOG","RND","LEN","ASC","VAL","PEEK","FRE","POS","CHR$","STR$","LEFT$","RIGHT$","MID$"};
     for (const char* f : F) if (n == f) return true;
     return false;
 }
@@ -146,28 +152,40 @@ Basic::Value Basic::callFunction(const std::string& name) {
     if      (name == "ABS") r = Value::number(std::fabs(a.num));
     else if (name == "INT") r = Value::number(std::floor(a.num));
     else if (name == "SGN") r = Value::number(a.num > 0 ? 1 : a.num < 0 ? -1 : 0);
-    else if (name == "SQR") r = Value::number(std::sqrt(a.num));
+    else if (name == "SQR") { if (a.num < 0) setError("ILLEGAL QUANTITY");
+                              else r = Value::number(std::sqrt(a.num)); }
     else if (name == "SIN") r = Value::number(std::sin(a.num));
     else if (name == "COS") r = Value::number(std::cos(a.num));
     else if (name == "TAN") r = Value::number(std::tan(a.num));
     else if (name == "ATN") r = Value::number(std::atan(a.num));
-    else if (name == "EXP") r = Value::number(std::exp(a.num));
-    else if (name == "LOG") r = Value::number(std::log(a.num));
+    else if (name == "EXP") { if (a.num > 88) setError("OVERFLOW");
+                              else r = Value::number(std::exp(a.num)); }
+    else if (name == "LOG") { if (a.num <= 0) setError("ILLEGAL QUANTITY");
+                              else r = Value::number(std::log(a.num)); }
     else if (name == "PEEK") r = Value::number(peekMem(int(a.num)));
+    else if (name == "FRE")  r = Value::number(double(freeBytes()));
+    else if (name == "POS")  r = Value::number(screen_.cursorX());
     else if (name == "LEN") r = Value::number(double(a.str.size()));
-    else if (name == "ASC") r = Value::number(a.str.empty() ? 0 : (unsigned char)a.str[0]);
+    else if (name == "ASC") { if (a.str.empty()) setError("ILLEGAL QUANTITY");
+                              else r = Value::number((unsigned char)a.str[0]); }
     else if (name == "VAL") r = Value::number(std::atof(a.str.c_str()));
-    else if (name == "CHR$") r = Value::string(std::string(1, char(int(a.num) & 0xFF)));
+    else if (name == "CHR$") { const int c = int(a.num);
+                               if (c < 0 || c > 255) setError("ILLEGAL QUANTITY");
+                               else r = Value::string(std::string(1, char(c))); }
     else if (name == "STR$") r = Value::string(formatNumber(a.num));
     else if (name == "RND") { rngState_ = rngState_ * 1103515245u + 12345u;
         r = Value::number(((rngState_ >> 16) & 0x7FFF) / 32768.0); }
     else if (name == "LEFT$") { Value n = nextArg(); if (err_) return r;
-        r = Value::string(a.str.substr(0, std::size_t(std::max(0, int(n.num))))); }
+        if (n.num < 0 || n.num > 255) { setError("ILLEGAL QUANTITY"); return r; }
+        r = Value::string(a.str.substr(0, std::min(std::size_t(n.num), a.str.size()))); }
     else if (name == "RIGHT$") { Value n = nextArg(); if (err_) return r;
-        int k = std::max(0, int(n.num)); int st = std::max(0, int(a.str.size()) - k);
+        if (n.num < 0 || n.num > 255) { setError("ILLEGAL QUANTITY"); return r; }
+        const int k = int(n.num), st = std::max(0, int(a.str.size()) - k);
         r = Value::string(a.str.substr(std::size_t(st))); }
     else if (name == "MID$") { Value s = nextArg(); if (err_) return r;
-        int start = std::max(1, int(s.num)) - 1; int cnt = int(a.str.size());
+        // The original counts from 1; a start of 0 is an error, not a clamp.
+        if (s.num < 1 || s.num > 255) { setError("ILLEGAL QUANTITY"); return r; }
+        const int start = int(s.num) - 1; int cnt = int(a.str.size());
         skipSpaces(); if (peek() == ',') { Value l = nextArg(); if (err_) return r; cnt = int(l.num); }
         r = (start >= int(a.str.size())) ? Value::string("")
             : Value::string(a.str.substr(std::size_t(start), std::size_t(std::max(0, cnt)))); }
@@ -192,8 +210,8 @@ Basic::Value Basic::callFn(const std::string& name) {
 
     // Bind the parameter, evaluate the stored expression with a sub-lexer.
     std::string pname = fn->param;
-    Value saved = getVar(pname, false);
-    setVar(pname, false, arg);
+    Value saved = getVar(pname, VT_NUM);
+    setVar(pname, VT_NUM, arg);
 
     const char* prevSrc = src_; std::size_t prevPos = pos_, prevLen = len_;
     std::string body = fn->expr;
@@ -201,7 +219,7 @@ Basic::Value Basic::callFn(const std::string& name) {
     Value res = parseExpr();
     src_ = prevSrc; len_ = prevLen; pos_ = prevPos;
 
-    setVar(pname, false, saved);
+    setVar(pname, VT_NUM, saved);
     return res;
 }
 
@@ -209,35 +227,48 @@ Basic::Value Basic::callFn(const std::string& name) {
 // variables & arrays
 // ---------------------------------------------------------------------------
 
-Basic::Value Basic::getVar(const std::string& name, bool str) {
-    char a = name.size() ? name[0] : ' ', b = name.size() > 1 ? name[1] : ' ';
-    Var* v = findVar(a, b, str);
-    if (v) return v->val;
-    return str ? Value::string("") : Value::number(0);
-}
-Basic::Var* Basic::findVar(char a, char b, bool str) {
-    for (auto& v : vars_) if (v.n0 == a && v.n1 == b && v.str == str) return &v;
-    return nullptr;
-}
-void Basic::setVar(const std::string& name, bool str, const Value& val) {
-    char a = name.size() ? name[0] : ' ', b = name.size() > 1 ? name[1] : ' ';
-    Var* v = findVar(a, b, str);
-    if (v) { v->val = val; return; }
-    vars_.push_back(Var{a, b, str, val});
+Basic::Value Basic::coerce(const Value& v, uint8_t type, bool lenient) {
+    // An assignment may not cross the number/string divide — the original says
+    // ?TYPE MISMATCH. Only data arriving as text (READ, INPUT#) is converted.
+    if (!lenient && (type == VT_STR) != v.isStr) { setError("TYPE MISMATCH"); return v; }
+    if (type == VT_STR) return v.isStr ? v : Value::string(formatNumber(v.num));
+    const double d = v.isStr ? std::atof(v.str.c_str()) : v.num;
+    if (type != VT_INT) return Value::number(d);
+    const double t = d < 0 ? std::ceil(d) : std::floor(d);   // truncate toward zero
+    if (t < -32768.0 || t > 32767.0) { setError("ILLEGAL QUANTITY"); return Value::number(0); }
+    return Value::number(t);
 }
 
-Basic::Arr* Basic::findArr(char a, char b, bool str) {
-    for (auto& x : arrays_) if (x.n0 == a && x.n1 == b && x.str == str) return &x;
+Basic::Value Basic::getVar(const std::string& name, uint8_t type) {
+    char a = name.size() ? name[0] : ' ', b = name.size() > 1 ? name[1] : ' ';
+    Var* v = findVar(a, b, type);
+    if (v) return v->val;
+    return type == VT_STR ? Value::string("") : Value::number(0);
+}
+Basic::Var* Basic::findVar(char a, char b, uint8_t type) {
+    for (auto& v : vars_) if (v.n0 == a && v.n1 == b && v.type == type) return &v;
     return nullptr;
 }
-Basic::Arr& Basic::ensureArr(const std::string& name, bool str, int ndims) {
+void Basic::setVar(const std::string& name, uint8_t type, const Value& val) {
     char a = name.size() ? name[0] : ' ', b = name.size() > 1 ? name[1] : ' ';
-    Arr* e = findArr(a, b, str);
+    const Value fitted = coerce(val, type, true);
+    Var* v = findVar(a, b, type);
+    if (v) { v->val = fitted; return; }
+    vars_.push_back(Var{a, b, type, fitted});
+}
+
+Basic::Arr* Basic::findArr(char a, char b, uint8_t type) {
+    for (auto& x : arrays_) if (x.n0 == a && x.n1 == b && x.type == type) return &x;
+    return nullptr;
+}
+Basic::Arr& Basic::ensureArr(const std::string& name, uint8_t type, int ndims) {
+    char a = name.size() ? name[0] : ' ', b = name.size() > 1 ? name[1] : ' ';
+    Arr* e = findArr(a, b, type);
     if (e) return *e;
-    Arr arr; arr.n0 = a; arr.n1 = b; arr.str = str;
+    Arr arr; arr.n0 = a; arr.n1 = b; arr.type = type;
     int total = 1;
     for (int i = 0; i < ndims; ++i) { arr.dim.push_back(11); total *= 11; }  // auto-dim 0..10
-    if (str) arr.s.assign(total, std::string()); else arr.num.assign(total, 0.0);
+    if (type == VT_STR) arr.s.assign(total, std::string()); else arr.num.assign(total, 0.0);
     arrays_.push_back(std::move(arr));
     return arrays_.back();
 }
@@ -261,13 +292,13 @@ int Basic::flatIndex(const Arr& a, const std::vector<int>& idx) {
     }
     return flat;
 }
-Basic::Value Basic::getArr(const std::string& name, bool str) {
+Basic::Value Basic::getArr(const std::string& name, uint8_t type) {
     std::vector<int> idx = parseIndices();
     if (err_) return Value::number(0);
-    Arr& a = ensureArr(name, str, int(idx.size()));
+    Arr& a = ensureArr(name, type, int(idx.size()));
     int f = flatIndex(a, idx);
     if (err_) return Value::number(0);
-    return str ? Value::string(a.s[f]) : Value::number(a.num[f]);
+    return type == VT_STR ? Value::string(a.s[f]) : Value::number(a.num[f]);
 }
 
 
@@ -298,11 +329,12 @@ bool Basic::parseLineNumber(int& out) {
     while (!atEnd() && std::isdigit((unsigned char)peek())) n = n * 10 + (src_[pos_++] - '0');
     out = n; return true;
 }
-std::string Basic::parseName(bool& isStr) {
+std::string Basic::parseName(uint8_t& type) {
     std::string name;
     while (!atEnd() && std::isalnum((unsigned char)peek())) name += src_[pos_++];
-    isStr = false;
-    if (peek() == '$') { isStr = true; ++pos_; }
+    type = VT_NUM;
+    if      (peek() == '$') { type = VT_STR; ++pos_; }
+    else if (peek() == '%') { type = VT_INT; ++pos_; }
     return name;
 }
 

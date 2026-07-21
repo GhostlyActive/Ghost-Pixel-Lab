@@ -1,6 +1,7 @@
 #include "apps/ghost_basic.h"
 #include "core/keyboard.h"
 #include "core/files.h"
+#include "board/audio.h"
 
 #include <Arduino.h>
 #include <cstdio>
@@ -13,6 +14,8 @@ using apps::ghost::Basic;
 
 namespace {
 constexpr float BLINK_PERIOD = 0.5f;
+constexpr uint32_t SAMPLE_RATE = 16000;
+constexpr size_t   CHUNK_MAX   = 2048;
 
 // SAVE / LOAD / DIRECTORY, backed by /GHOST/BASIC on the SD card (or flash).
 // Programs are plain text so they can be read on a PC too.
@@ -91,6 +94,13 @@ void GhostBasic::onEnter() {
     screen_.setTextColor(ghost::COL_LTBLUE);
     basic_.reset();
     basic_.setFiles(core::files::ready() ? &s_programFiles : nullptr);
+
+    audioOk_ = board::audio::begin(SAMPLE_RATE);
+    board::audio::setSpeakerEnable(false);   // only switched on while a voice sounds
+    speakerOn_ = false;
+    sid_.setSampleRate(SAMPLE_RATE);
+    sid_.reset();
+    basic_.setSid(&sid_);
     inputLine_.clear();
 
     // Boot banner with this machine's real memory figures.
@@ -110,6 +120,12 @@ void GhostBasic::onEnter() {
 
     blinkT_   = 0;
     cursorOn_ = true;
+}
+
+void GhostBasic::onExit() {
+    board::audio::setSpeakerEnable(false);
+    speakerOn_ = false;
+    sid_.reset();
 }
 
 void GhostBasic::routeKey(uint8_t k) {
@@ -144,10 +160,30 @@ void GhostBasic::routeKey(uint8_t k) {
 void GhostBasic::update(const core::Input& in, float dt) {
     if (in.backPressed) basic_.breakRun();
 
+    basic_.setMillis(millis());   // drives the TI / TI$ jiffy clock
+
     uint8_t k;
     while (core::keyboard::next(k)) routeKey(k);
 
     basic_.poll();
+
+    // Feed the speaker only while a voice is sounding: silence costs nothing
+    // and the amplifier stays off, so an idle machine is genuinely quiet.
+    if (audioOk_) {
+        const bool want = sid_.active();
+        if (want != speakerOn_) {
+            board::audio::setSpeakerEnable(want);
+            speakerOn_ = want;
+        }
+        if (want) {
+            static int16_t buf[CHUNK_MAX];
+            size_t n = size_t(dt * SAMPLE_RATE);
+            if (n < 64) n = 64;
+            if (n > CHUNK_MAX) n = CHUNK_MAX;
+            sid_.render(buf, int(n));
+            board::audio::play(buf, n);
+        }
+    }
 
     blinkT_ += dt;
     if (blinkT_ >= BLINK_PERIOD) {

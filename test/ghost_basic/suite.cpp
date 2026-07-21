@@ -4,6 +4,8 @@
 #include "apps/ghost_basic/basic.h"
 #include "apps/ghost_basic/editor.h"
 #include "apps/ghost_basic/petscii.h"
+#include "apps/ghost_basic/sid.h"
+#include "board/display.h"
 #include "board/display.h"
 
 #include <cstdint>
@@ -31,6 +33,7 @@ struct FakeFiles final : public Files {
     uint32_t freeBytes() override { return 254 * 100; }
 };
 static FakeFiles g_files;
+static Sid g_sid;
 
 static int passN = 0, failN = 0;
 
@@ -124,7 +127,7 @@ static void checkSeq(const char* name, const std::vector<std::string>& steps,
 
 static void checkExpr(const std::string& expr, const std::string& want) {
     auto out = session({}, "PRINT " + expr);
-    std::string got = out.empty() ? "<none>" : out[0];
+    std::string got = out.empty() ? "" : out[0];   // an empty line is a real result
     if (got == want) { ++passN; }
     else { ++failN; std::printf("FAIL  PRINT %s  -> [%s]  expected [%s]\n",
                                 expr.c_str(), got.c_str(), want.c_str()); }
@@ -149,6 +152,7 @@ static void checkProg(const char* name, const std::vector<std::string>& lines,
 
 int main() {
     basic.setFiles(&g_files);
+    basic.setSid(&g_sid);
 
     // --- arithmetic & precedence ---
     checkExpr("2+3*4", "14");
@@ -271,6 +275,64 @@ int main() {
     checkProg("out of data", {"10 READ X:READ Y", "20 DATA 5"}, {"?OUT OF DATA ERROR IN 10"});
     checkProg("bad subscript", {"10 DIM A(2):A(5)=1"}, {"?BAD SUBSCRIPT ERROR IN 10"});
 
+    // --- numeric functions, edge cases included ---------------------------
+    checkExpr("ABS(0)", "0");            checkExpr("ABS(-0.5)", ".5");
+    checkExpr("INT(0)", "0");            checkExpr("INT(-0.1)", "-1");
+    checkExpr("INT(5)", "5");            checkExpr("INT(-5)", "-5");
+    checkExpr("SGN(7)", "1");            checkExpr("SGN(-0.001)", "-1");
+    checkExpr("SQR(0)", "0");            checkExpr("SQR(2)", "1.41421356");
+    checkExpr("SQR(-1)", "?ILLEGAL QUANTITY ERROR");
+    checkExpr("LOG(1)", "0");            checkExpr("LOG(0)", "?ILLEGAL QUANTITY ERROR");
+    checkExpr("LOG(-1)", "?ILLEGAL QUANTITY ERROR");
+    checkExpr("EXP(0)", "1");
+    checkExpr("SIN(0)", "0");            checkExpr("COS(0)", "1");
+    checkExpr("TAN(0)", "0");            checkExpr("ATN(0)", "0");
+    checkExpr("INT(SIN(1)*1000)", "841");
+
+    // --- string functions at their boundaries -----------------------------
+    checkExpr("LEFT$(\"AB\",0)", "");
+    checkExpr("LEFT$(\"AB\",9)", "AB");
+    checkExpr("RIGHT$(\"AB\",0)", "");
+    checkExpr("RIGHT$(\"AB\",9)", "AB");
+    checkExpr("MID$(\"ABCDE\",5)", "E");
+    checkExpr("MID$(\"ABCDE\",9)", "");
+    checkExpr("MID$(\"ABCDE\",2,0)", "");
+    checkExpr("MID$(\"ABCDE\",0,2)", "?ILLEGAL QUANTITY ERROR");
+    checkExpr("LEN(CHR$(0))", "1");
+    checkExpr("ASC(\"\")", "?ILLEGAL QUANTITY ERROR");
+    checkExpr("VAL(\"\")", "0");
+    checkExpr("VAL(\"-3.5\")", "-3.5");
+    checkExpr("VAL(\"  7\")", "7");
+    checkExpr("CHR$(65)+CHR$(65)", "AA");
+    checkExpr("LEN(\"A\"+\"B\"+\"C\")", "3");
+    checkExpr("STR$(0)", "0");
+    checkExpr("STR$(.5)", ".5");
+    checkExpr("LEN(STR$(-1))", "2");
+    checkExpr("VAL(STR$(1234))", "1234");
+
+    // --- how numbers come out ---------------------------------------------
+    checkExpr("1/3", ".333333333");
+    checkExpr("2/3", ".666666667");
+    checkExpr("1/2", ".5");
+    checkExpr("-1/2", "-.5");
+    checkExpr("1000000", "1000000");
+    checkExpr("0.1+0.2", ".3");
+    checkExpr("3*0.1", ".3");
+    checkExpr("1E3", "1000");
+    checkExpr("-0", "0");
+
+    // --- comparisons and logic, more corners -------------------------------
+    checkExpr("\"\"=\"\"", "-1");
+    checkExpr("\"A\"=\"AB\"", "0");
+    checkExpr("\"AB\">\"A\"", "-1");
+    checkExpr("NOT -1", "0");
+    checkExpr("NOT 1", "-2");
+    checkExpr("-1 AND -1", "-1");
+    checkExpr("0 OR 0", "0");
+    checkExpr("(5>3)AND(2>1)", "-1");
+    checkExpr("(5>3)+(2>1)", "-2");
+    checkExpr("ABS((5>3)+(2>1))", "2");
+
     // --- exponent precedence & associativity ---
     checkExpr("3^2", "9");
     checkExpr("-2^2", "-4");        // ^ binds tighter than unary minus
@@ -287,6 +349,73 @@ int main() {
     checkExpr("CHR$(65)+CHR$(66)", "AB");
     checkExpr("\"B\">\"A\"", "-1");
     checkExpr("LEN(STR$(100))", "4");
+
+    // --- loops, nesting and their corners ---------------------------------
+    checkProg("three nested loops",
+        {"10 T=0", "20 FOR I=1 TO 2:FOR J=1 TO 2:FOR K=1 TO 2:T=T+1:NEXT:NEXT:NEXT",
+         "30 PRINT T"}, {"8"});
+    checkProg("NEXT may name its variable",
+        {"10 FOR I=1 TO 3:PRINT I:NEXT I"}, {"1", "2", "3"});
+    checkProg("the counter survives the loop",
+        {"10 FOR I=1 TO 3:NEXT", "20 PRINT I"}, {"4"});
+    checkProg("a negative STEP that never runs still runs once",
+        {"10 FOR I=1 TO 5 STEP -1:PRINT I:NEXT:PRINT \"D\""}, {"1", "D"});
+    checkProg("fractional STEP",
+        {"10 FOR I=1 TO 2 STEP .5:PRINT I:NEXT"}, {"1", "1.5", "2"});
+    checkProg("three levels of GOSUB",
+        {"10 GOSUB 100:PRINT \"D\":END", "100 GOSUB 200:RETURN",
+         "200 GOSUB 300:RETURN", "300 PRINT \"A\":RETURN"}, {"A", "D"});
+
+    // --- ON, DIM and DATA corners -----------------------------------------
+    checkProg("ON 0 falls through",
+        {"10 ON 0 GOTO 100", "20 PRINT \"FELL\":END", "100 PRINT \"JUMPED\""}, {"FELL"});
+    checkProg("ON past the end of the list falls through",
+        {"10 ON 5 GOTO 100,110", "20 PRINT \"FELL\":END", "100 PRINT \"A\"", "110 PRINT \"B\""},
+        {"FELL"});
+    checkProg("ON with a negative index is an error",
+        {"10 ON -1 GOTO 100", "20 END", "100 PRINT \"X\""},
+        {"?ILLEGAL QUANTITY ERROR IN 10"});
+    checkProg("ON GOSUB comes back",
+        {"10 ON 2 GOSUB 100,200", "20 PRINT \"BACK\":END",
+         "100 PRINT \"ONE\":RETURN", "200 PRINT \"TWO\":RETURN"}, {"TWO", "BACK"});
+    checkProg("three-dimensional arrays",
+        {"10 DIM A(2,2,2):A(1,1,1)=9:PRINT A(1,1,1)"}, {"9"});
+    checkProg("dimensioning twice is an error",
+        {"10 DIM A(5)", "20 DIM A(5)"}, {"?REDIM'D ARRAY ERROR IN 20"});
+    checkProg("RESTORE in the middle of reading",
+        {"10 READ A:READ B:RESTORE:READ C", "20 PRINT A;B;C", "30 DATA 1,2,3"},
+        {"1  2  1"});
+    checkProg("READ mixes strings and numbers",
+        {"10 READ A$,B:PRINT A$;B", "20 DATA HI,7"}, {"HI 7"});
+
+    // --- PRINT layout ------------------------------------------------------
+    checkProg("a bare PRINT makes a blank line",
+        {"10 PRINT \"A\":PRINT:PRINT \"B\""}, {"A", "", "B"});
+    checkProg("a trailing semicolon holds the line",
+        {"10 PRINT \"A\";:PRINT \"B\""}, {"AB"});
+    checkProg("two commas cross two zones",
+        {"10 PRINT \"A\",\"B\",\"C\""},
+        {std::string("A") + std::string(9, ' ') + "B" + std::string(9, ' ') + "C"});
+
+    // --- editing a stored program -----------------------------------------
+    checkSeq("a line number on its own deletes the line",
+        {"10 PRINT 1", "20 PRINT 2", "10", "LIST"}, {"20 PRINT 2"});
+    checkSeq("entering the same number replaces it",
+        {"10 PRINT 1", "10 PRINT 9", "LIST"}, {"10 PRINT 9"});
+    checkSeq("LIST takes a range",
+        {"10 PRINT 1", "20 PRINT 2", "30 PRINT 3", "LIST 20-30"},
+        {"20 PRINT 2", "30 PRINT 3"});
+    checkSeq("LIST takes a single line",
+        {"10 PRINT 1", "20 PRINT 2", "LIST 10"}, {"10 PRINT 1"});
+
+    // --- every error message the machine can print -------------------------
+    checkSeq("error: syntax",         {"PRINT )"},            {"?SYNTAX ERROR"});
+    checkSeq("error: divide by zero", {"PRINT 1/0"},          {"?DIVISION BY ZERO ERROR"});
+    checkSeq("error: type mismatch",  {"A=\"X\""},           {"?TYPE MISMATCH ERROR"});
+    checkSeq("error: undefined function", {"PRINT FN Q(1)"},  {"?UNDEF'D FUNCTION ERROR"});
+    checkSeq("error: can't continue", {"CONT"},               {"?CAN'T CONTINUE ERROR"});
+    checkSeq("error: file not open",  {"CLOSE 1:PRINT#1,\"X\""}, {"?FILE NOT OPEN ERROR"});
+    checkSeq("error: overflow",       {"PRINT EXP(200)"},     {"?OVERFLOW ERROR"});
 
     // --- control-flow edge cases ---
     checkProg("for runs once at limit",
@@ -367,6 +496,405 @@ int main() {
     // as on the real machine, and must not spill into the grid.
     checkSeq("past the screen is plain ram",
         {"POKE 2024,1", "PRINT PEEK(2024)"}, {"1"});
+
+    // --- integer variables (A%) ------------------------------------------
+    checkExpr("0", "0");                       // sanity anchor
+    checkSeq("integer truncates toward zero", {"A%=3.7:PRINT A%"}, {"3"});
+    checkSeq("integer truncates negatives up", {"A%=-3.7:PRINT A%"}, {"-3"});
+    checkSeq("A and A% are different variables", {"A=5:A%=7:PRINT A;A%"}, {"5  7"});
+    checkSeq("integer range is enforced", {"A%=40000"}, {"?ILLEGAL QUANTITY ERROR"});
+    checkSeq("integer arrays truncate too",
+        {"DIM A%(3):A%(1)=2.9:PRINT A%(1)"}, {"2"});
+    checkProg("integer loop counter is rejected, like the original",
+        {"10 FOR I%=1 TO 3", "20 NEXT"}, {"?SYNTAX ERROR IN 10"});
+    checkProg("INPUT into an integer truncates",
+        {"10 INPUT A%", "20 PRINT A%"}, {"? 7.9", "7"}, {"7.9"});
+
+    // --- line lengths at the wrap boundary --------------------------------
+    // 40 characters fill a row exactly, 41 spill into a linked second row, and
+    // 80 is the documented ceiling. Each of these has broken before.
+    {
+        const std::string p33(33, 'A'), p34(34, 'A'), p73(73, 'A');
+        checkSeq("a line of exactly 40 characters", {"10 REM " + p33, "LIST"},
+                 {"10 REM " + p33});
+        // 41 characters cannot fit one 40-column row, so LIST necessarily
+        // shows them across two — the stored line is still one line.
+        checkSeq("a line that wraps to a second row", {"10 REM " + p34, "LIST"},
+                 {"10 REM " + std::string(33, 'A'), "A"});
+        checkSeq("a line of the full 80 characters", {"10 REM " + p73, "LIST"},
+                 {"10 REM " + std::string(33, 'A'), std::string(40, 'A')});
+    }
+
+    // --- cursor movement at the edges --------------------------------------
+    {
+        basic.reset(); scr.reset();
+        feed('A'); feed('B');                 // row 0, cursor at column 2
+        feed(KEY_CRSR_LEFT); feed(KEY_CRSR_LEFT); feed(KEY_CRSR_LEFT);
+        const bool wrapped = scr.cursorY() == 0 && scr.cursorX() == 0;  // home stays home
+        scr.setCursor(0, 1);
+        feed(KEY_CRSR_LEFT);                  // off the left edge of row 1
+        const bool toPrevRow = scr.cursorY() == 0 && scr.cursorX() == Screen::COLS - 1;
+        if (wrapped && toPrevRow) ++passN;
+        else { ++failN; std::printf("FAIL  cursor does not wrap at the left edge\n"); }
+    }
+    {
+        basic.reset(); scr.reset();
+        scr.setCursor(Screen::COLS - 1, 0);
+        feed(KEY_CRSR_RIGHT);                 // off the right edge
+        if (scr.cursorY() == 1 && scr.cursorX() == 0) ++passN;
+        else { ++failN; std::printf("FAIL  cursor does not wrap at the right edge\n"); }
+    }
+    {
+        basic.reset(); scr.reset();
+        feed('A'); feed('B'); feed(KEY_DELETE);
+        char b[81]; scr.readLine(0, b, sizeof b);
+        if (std::string(b) == "A" && scr.cursorX() == 1) ++passN;
+        else { ++failN; std::printf("FAIL  DELETE gave [%s] at column %d\n", b, scr.cursorX()); }
+    }
+
+    // --- the editor's signature move --------------------------------------
+    // Cursor up onto an old line, change a character, press RETURN and the
+    // line is re-entered. This is what makes the machine feel like a C64, and
+    // until now nothing tested it.
+    {
+        basic.reset(); scr.reset();
+        typeEnter("10 PRINT 1");            // lands on row 0, cursor drops to row 1
+        feed(KEY_CRSR_UP);                  // back onto the line
+        for (int i = 0; i < 9; ++i) feed(KEY_CRSR_RIGHT);   // out to the digit
+        feed('2');                          // overwrite it
+        feed(0x0D);                         // RETURN re-enters the whole line
+        scr.reset();
+        typeEnter("LIST");
+        char b[81]; scr.readLine(1, b, sizeof b);
+        if (std::string(b) == "10 PRINT 2") ++passN;
+        else { ++failN; std::printf("FAIL  editor: re-entering an edited line gave [%s]\n", b); }
+    }
+
+    // --- the screen scrolls once it is full --------------------------------
+    {
+        basic.reset(); scr.reset();
+        typeEnter("10 FOR I=1 TO 30:PRINT I:NEXT");
+        scr.reset();
+        typeEnter("RUN");
+        char top[81]; scr.readLine(0, top, sizeof top);
+        bool sawLast = false;
+        for (int r = 0; r < Screen::ROWS; ++r) {
+            char b[81]; scr.readLine(r, b, sizeof b);
+            if (trim(b) == "30") sawLast = true;
+        }
+        if (std::string(top) != "RUN" && sawLast) ++passN;
+        else { ++failN; std::printf("FAIL  screen: 30 lines did not scroll properly\n"); }
+    }
+
+    // --- an endless loop must stay interruptible ---------------------------
+    // The whole point of the stepped interpreter: 10 GOTO 10 may never freeze
+    // the frame loop, and RUN/STOP has to get back out of it.
+    {
+        basic.reset(); scr.reset();
+        typeEnter("10 GOTO 10");
+        for (char c : std::string("RUN")) feed((uint8_t)c);
+        feed(0x0D);
+        for (int i = 0; i < 5; ++i) basic.poll();
+        const bool stillRunning = basic.busy();
+        basic.breakRun();
+        basic.poll();
+        if (stillRunning && !basic.busy()) ++passN;
+        else { ++failN; std::printf("FAIL  endless loop: running=%d, stopped=%d\n",
+                                    stillRunning, !basic.busy()); }
+    }
+
+    // --- malformed input must not wedge the machine ------------------------
+    {
+        static const char* junk[] = {
+            "PRINT )))", "FOR", "NEXT", "GOTO", "IF", "A=", "DIM A(", "POKE ,",
+            "PRINT CHR$(", "LEFT$(\"A\"", "GOSUB", "RETURN", "ON", "OPEN",
+            "INPUT#", "DEF FN", "WAIT", "?????", "10", "LIST -", "\"",
+        };
+        bool ok = true;
+        for (const char* j : junk) {
+            basic.reset(); scr.reset();
+            typeEnter(j);
+            if (basic.busy()) { ok = false; std::printf("  wedged on: %s\n", j); }
+        }
+        if (ok) ++passN;
+        else { ++failN; std::printf("FAIL  garbage input left the interpreter busy\n"); }
+    }
+
+    // --- every glyph renders exactly what the table holds -------------------
+    // Guards the whole font->screen path, which is how the shifted-codes bug
+    // stayed invisible for three rounds of looking at pictures.
+    {
+        static std::vector<uint16_t> fb(board::display::WIDTH * board::display::HEIGHT);
+        board::gfx::Surface surf{fb.data(), board::display::WIDTH, board::display::HEIGHT};
+        const int ox = (board::display::WIDTH  - Screen::PIXW) / 2;
+        const int oy = (board::display::HEIGHT - Screen::PIXH) / 2;
+        scr.reset(); scr.setBackground(COL_BLACK); scr.setTextColor(COL_WHITE);
+        int bad = -1;
+        for (int code = 0; code < 128 && bad < 0; ++code) {
+            scr.pokeScreen(0, uint8_t(code));
+            scr.pokeColor(0, COL_WHITE);
+            scr.render(surf, false);
+            for (int r = 0; r < 8; ++r) {
+                uint8_t got = 0;
+                for (int c = 0; c < 8; ++c)
+                    if (fb[(oy + r) * board::display::WIDTH + ox + c] != 0) got |= uint8_t(0x80 >> c);
+                if (got != petscii::FONT[code][r]) { bad = code; break; }
+            }
+        }
+        if (bad < 0) ++passN;
+        else { ++failN; std::printf("FAIL  glyph %d does not render as the table says\n", bad); }
+    }
+
+    // --- the programs the manual promises ----------------------------------
+    // If the documentation prints a listing, the suite runs it. Otherwise the
+    // manual slowly drifts into fiction.
+    checkProg("manual: quiz from DATA",
+        {"10 READ F$, A$", "20 IF F$ = \"END\" THEN PRINT \"DONE\" : END", "30 PRINT F$",
+         "40 INPUT \"ANSWER\"; R$", "50 IF R$ = A$ THEN PRINT \"CORRECT\" : GOTO 10",
+         "60 PRINT \"WRONG - CORRECT: \"; A$", "70 GOTO 10",
+         "80 DATA \"2+2\", \"4\"", "90 DATA \"CAPITAL OF FRANCE\", \"PARIS\"",
+         "100 DATA \"END\", \"END\""},
+        {"2+2", "ANSWER? 4", "CORRECT", "CAPITAL OF FRANCE", "ANSWER? LONDON",
+         "WRONG - CORRECT: PARIS", "DONE"},
+        {"4", "LONDON"});
+
+    checkProg("manual: number guessing (with the draw fixed)",
+        {"10 N = 42", "20 PRINT \"I AM THINKING OF 1 TO 100\"", "30 INPUT \"YOUR GUESS\"; T",
+         "40 IF T < N THEN PRINT \"TOO SMALL\" : GOTO 30",
+         "50 IF T > N THEN PRINT \"TOO BIG\" : GOTO 30", "60 PRINT \"CORRECT!\""},
+        {"I AM THINKING OF 1 TO 100", "YOUR GUESS? 50", "TOO BIG",
+         "YOUR GUESS? 25", "TOO SMALL", "YOUR GUESS? 42", "CORRECT!"},
+        {"50", "25", "42"});
+
+    // --- SID ---------------------------------------------------------------
+    {
+        // The classic listing: volume, envelope, pitch, then gate on.
+        auto sidProgram = [](const char* extra) {
+            basic.reset(); scr.reset(); g_sid.reset(); g_sid.setSampleRate(16000);
+            typeEnter("10 S=54272");
+            typeEnter("20 POKE S+24,15");
+            typeEnter("30 POKE S+5,0 : POKE S+6,240");   // instant attack, full sustain
+            typeEnter("40 POKE S+1,25 : POKE S,177");
+            typeEnter(extra);
+            typeEnter("RUN");
+        };
+
+        // A gated sawtooth has to produce sound.
+        sidProgram("50 POKE S+4,33");
+        std::vector<int16_t> buf(16000);
+        g_sid.render(buf.data(), int(buf.size()));
+        long peak = 0;
+        for (int16_t v : buf) peak = std::max<long>(peak, std::abs(long(v)));
+        if (peak > 1000) ++passN;
+        else { ++failN; std::printf("FAIL  SID: gated voice is silent (peak %ld)\n", peak); }
+
+        // active() has to hold the instant the gate opens, before a single
+        // sample exists: the app feeds the speaker only while it does, so a
+        // false here would mean the attack never gets a chance to rise.
+        sidProgram("50 POKE S+4,33");
+        if (g_sid.active()) ++passN;
+        else { ++failN; std::printf("FAIL  SID: gate open but the chip reports idle\n"); }
+
+        // Frequency: POKE 25,177 is 6577, which is 6577 * 985248 / 2^24 Hz.
+        int crossings = 0;
+        for (std::size_t i = 1; i < buf.size(); ++i)
+            if (buf[i - 1] < 0 && buf[i] >= 0) ++crossings;
+        const double want = 6577.0 * 985248.0 / 16777216.0;   // ~386 Hz
+        if (std::abs(crossings - want) < want * 0.03) ++passN;
+        else { ++failN; std::printf("FAIL  SID: pitch %d Hz, expected %.0f\n", crossings, want); }
+
+        // Volume 0 must silence the chip outright.
+        sidProgram("50 POKE S+4,33 : POKE S+24,0");
+        g_sid.render(buf.data(), int(buf.size()));
+        peak = 0;
+        for (int16_t v : buf) peak = std::max<long>(peak, std::abs(long(v)));
+        if (peak == 0) ++passN;
+        else { ++failN; std::printf("FAIL  SID: volume 0 still sounds (peak %ld)\n", peak); }
+
+        // Closing the gate has to fade the voice out, not cut it dead.
+        sidProgram("50 POKE S+4,33");
+        g_sid.render(buf.data(), 4000);
+        basic.reset();
+        g_sid.write(4, 32);                    // gate off, sawtooth still selected
+        g_sid.render(buf.data(), 16000);       // release runs 3x the 2 ms attack
+        peak = 0;
+        for (std::size_t i = 8000; i < buf.size(); ++i) peak = std::max<long>(peak, std::abs(long(buf[i])));
+        if (peak == 0) ++passN;
+        else { ++failN; std::printf("FAIL  SID: release never reaches silence (peak %ld)\n", peak); }
+
+        // Every waveform has to make sound on its own.
+        {
+            const struct { uint8_t bit; const char* name; } waves[] = {
+                {0x10, "triangle"}, {0x20, "sawtooth"}, {0x40, "pulse"}, {0x80, "noise"},
+            };
+            for (const auto& w : waves) {
+                g_sid.reset(); g_sid.setSampleRate(16000);
+                g_sid.write(24, 15);                 // volume
+                g_sid.write(6, 0xF0);                // full sustain
+                g_sid.write(3, 0x08);                // half pulse width
+                g_sid.write(0, 177); g_sid.write(1, 25);
+                g_sid.write(4, uint8_t(w.bit | 1));  // waveform + gate
+                g_sid.render(buf.data(), 8000);
+                long p2 = 0;
+                for (int16_t v : buf) p2 = std::max<long>(p2, std::abs(long(v)));
+                if (p2 > 500) ++passN;
+                else { ++failN; std::printf("FAIL  SID: %s is silent (peak %ld)\n", w.name, p2); }
+            }
+        }
+
+        // Sustain level has to scale the held note.
+        {
+            auto heldPeak = [&](uint8_t sustainNibble) {
+                g_sid.reset(); g_sid.setSampleRate(16000);
+                g_sid.write(24, 15);
+                g_sid.write(5, 0x00);                        // instant attack/decay
+                g_sid.write(6, uint8_t(sustainNibble << 4));
+                g_sid.write(0, 177); g_sid.write(1, 25);
+                g_sid.write(4, 0x21);
+                g_sid.render(buf.data(), 8000);
+                long q = 0;
+                for (std::size_t i = 4000; i < 8000; ++i) q = std::max<long>(q, std::abs(long(buf[i])));
+                return q;
+            };
+            const long full = heldPeak(15), half = heldPeak(7), none = heldPeak(0);
+            if (full > half && half > none && none == 0) ++passN;
+            else { ++failN; std::printf("FAIL  SID sustain: full=%ld half=%ld none=%ld\n",
+                                        full, half, none); }
+        }
+
+        // The oscillator-3 tap at 54299 is how listings read noise back.
+        g_sid.reset(); g_sid.setSampleRate(16000);
+        g_sid.write(14, 100); g_sid.write(15, 30); g_sid.write(18, 0x81);  // v3 noise, gated
+        g_sid.render(buf.data(), 2000);
+        const uint8_t tap = g_sid.read(27);
+        g_sid.render(buf.data(), 2000);
+        if (tap != g_sid.read(27)) ++passN;
+        else { ++failN; std::printf("FAIL  SID: osc3 tap never changes\n"); }
+
+        // The beginner's listing that leaves the envelope untouched: attack and
+        // decay are 0 and so is sustain, so the note is gone within
+        // milliseconds even though the gate stays open. The chip has to report
+        // itself idle afterwards — on the real machine that program is silent,
+        // and here a busy chip would leave the amplifier powered for nothing.
+        {
+            basic.reset(); scr.reset(); g_sid.reset(); g_sid.setSampleRate(16000);
+            typeEnter("10 S=54272");
+            typeEnter("20 POKE S+24,15");
+            typeEnter("30 POKE S+1,20 : POKE S,100");
+            typeEnter("40 POKE S+4,33");
+            typeEnter("RUN");
+            g_sid.render(buf.data(), int(buf.size()));      // one second
+            long tail = 0;
+            for (std::size_t i = buf.size() / 2; i < buf.size(); ++i)
+                tail = std::max<long>(tail, std::abs(long(buf[i])));
+            if (tail == 0 && !g_sid.active()) ++passN;
+            else { ++failN; std::printf("FAIL  SID: sustain 0 stays busy (tail %ld, active %d)\n",
+                                        tail, int(g_sid.active())); }
+        }
+    }
+
+    // --- file I/O: OPEN / CLOSE / PRINT# / INPUT# / GET# / CMD ------------
+    checkProg("write a file and read it back",
+        {"10 OPEN 1,8,2,\"DATA,S,W\"", "20 PRINT#1,\"HELLO\"", "30 PRINT#1,42",
+         "40 CLOSE 1", "50 OPEN 1,8,2,\"DATA,S,R\"", "60 INPUT#1,A$", "70 INPUT#1,B",
+         "80 CLOSE 1", "90 PRINT A$;B"}, {"HELLO 42"});
+
+    checkProg("INPUT# splits a line on commas",
+        {"10 OPEN 1,8,2,\"CSV,S,W\"", "20 PRINT#1,\"AB,7\"", "30 CLOSE 1",
+         "40 OPEN 1,8,2,\"CSV,S,R\"", "50 INPUT#1,A$,B", "60 CLOSE 1",
+         "70 PRINT A$;B"}, {"AB 7"});
+
+    checkProg("ST reports end of file",
+        {"10 OPEN 1,8,2,\"E,S,W\"", "20 PRINT#1,\"X\"", "30 CLOSE 1",
+         "40 OPEN 1,8,2,\"E,S,R\"", "50 INPUT#1,A$", "60 PRINT ST", "70 CLOSE 1"},
+        {"64"});
+
+    checkProg("GET# reads one character at a time",
+        {"10 OPEN 1,8,2,\"G,S,W\"", "20 PRINT#1,\"AB\"", "30 CLOSE 1",
+         "40 OPEN 1,8,2,\"G,S,R\"", "50 GET#1,A$ : GET#1,B$", "60 CLOSE 1",
+         "70 PRINT A$;B$"}, {"AB"});
+
+    checkProg("CMD redirects PRINT until CLOSE",
+        {"10 OPEN 1,8,2,\"C,S,W\"", "20 CMD 1", "30 PRINT \"INTOFILE\"",
+         "40 CLOSE 1", "50 OPEN 1,8,2,\"C,S,R\"", "60 INPUT#1,A$", "70 CLOSE 1",
+         "80 PRINT A$"}, {"INTOFILE"});
+
+    checkProg("opening the same file twice",
+        {"10 OPEN 1,8,2,\"A,S,W\"", "20 OPEN 1,8,2,\"B,S,W\""}, {"?FILE OPEN ERROR IN 20"});
+    checkProg("closing a file that was never open is harmless",
+        {"10 CLOSE 7", "20 PRINT \"FINE\""}, {"FINE"});
+    checkProg("two files open at once",
+        {"10 OPEN 1,8,2,\"P,S,W\" : OPEN 2,8,2,\"Q,S,W\"",
+         "20 PRINT#1,\"ONE\" : PRINT#2,\"TWO\"", "30 CLOSE 1 : CLOSE 2",
+         "40 OPEN 1,8,2,\"P,S,R\" : OPEN 2,8,2,\"Q,S,R\"",
+         "50 INPUT#1,A$ : INPUT#2,B$", "60 CLOSE 1 : CLOSE 2", "70 PRINT A$;B$"},
+        {"ONETWO"});
+    checkProg("reading past the end yields empty strings",
+        {"10 OPEN 1,8,2,\"Z,S,W\"", "20 PRINT#1,\"X\"", "30 CLOSE 1",
+         "40 OPEN 1,8,2,\"Z,S,R\"", "50 INPUT#1,A$ : INPUT#1,B$", "60 CLOSE 1",
+         "70 PRINT \"[\";A$;\"][\";B$;\"]\""}, {"[X][]"});
+
+    checkProg("reading a file that is not there",
+        {"10 OPEN 1,8,2,\"NOPE,S,R\""}, {"?FILE NOT FOUND ERROR IN 10"});
+    checkProg("using a file that was never opened",
+        {"10 PRINT#3,\"X\""}, {"?FILE NOT OPEN ERROR IN 10"});
+
+    // A real listing writes SAVE "NAME",8 — the device number must be accepted
+    // and ignored, not treated as a syntax error.
+    {
+        g_files.f.clear();
+        auto out = seq({"10 PRINT 1", "SAVE \"DEV\",8", "DIRECTORY"});
+        const bool ok = out.size() >= 2 && out[1].find("\"DEV\"") != std::string::npos;
+        if (ok) ++passN;
+        else { ++failN; std::printf("FAIL  SAVE with device number  got: ");
+               for (auto& x : out) std::printf("[%s] ", x.c_str()); std::printf("\n"); }
+    }
+    checkSeq("VERIFY confirms a saved program",
+        {"10 PRINT 1", "SAVE \"VER\",8", "VERIFY \"VER\",8"}, {"OK"});
+
+    // --- reserved variables and the last functions ------------------------
+    basic.setMillis(0);
+    checkSeq("TI starts at zero", {"PRINT TI"}, {"0"});
+    checkSeq("TI$ starts at midnight", {"PRINT TI$"}, {"000000"});
+    checkSeq("TI$ can be set and read back", {"TI$=\"012345\"", "PRINT TI$"}, {"012345"});
+    checkSeq("TI counts jiffies from TI$", {"TI$=\"000001\"", "PRINT TI"}, {"60"});
+    checkSeq("TI is read-only", {"TI=5"}, {"?SYNTAX ERROR"});
+    checkSeq("ST reads as zero", {"PRINT ST"}, {"0"});
+    checkSeq("POS reports the cursor column", {"PRINT \"ABC\";POS(0)"}, {"ABC 3"});
+    // FRE comes back through a signed 16-bit register on the original, so a
+    // nearly empty machine reports a negative number and you add 65536.
+    checkSeq("FRE reports the signed-16-bit quirk", {"PRINT FRE(0)"}, {"-26625"});
+    checkSeq("FRE drops as the program grows",
+        {"10 REM 1234567890", "PRINT FRE(0)<-26625"}, {"-1"});
+    // WAIT spins until the bit appears; poking it first lets the test finish.
+    checkProg("WAIT falls through once the bit is set",
+        {"10 POKE 4096,255", "20 WAIT 4096,1", "30 PRINT \"PAST\""}, {"PAST"});
+
+    // --- PETSCII control codes inside PRINT ---------------------------
+    // These are checked against the screen directly: CLR wipes the echoed
+    // command line, so there is no output text left to compare.
+    auto ctrl = [&](const char* name, const char* cmd, bool (*check)()) {
+        basic.reset(); scr.reset();
+        typeEnter(cmd);
+        if (check()) ++passN;
+        else { ++failN; std::printf("FAIL  control code: %s\n", name); }
+    };
+    ctrl("CHR$(147) clears the screen", "PRINT CHR$(147);\"X\"",
+         []{ char b[81]; scr.readLine(0, b, sizeof b); return std::string(b) == "X"; });
+    ctrl("CHR$(28) switches to red", "PRINT CHR$(147);CHR$(28);\"R\"",
+         []{ return scr.peekColor(0) == 2 && scr.peekScreen(0) == 18; });
+    ctrl("CHR$(158) switches to yellow", "PRINT CHR$(147);CHR$(158);\"Y\"",
+         []{ return scr.peekColor(0) == 7; });
+    ctrl("CHR$(18) turns on reverse video", "PRINT CHR$(147);CHR$(18);\"A\"",
+         []{ return scr.peekScreen(0) == (1 | 0x80); });
+    ctrl("CHR$(146) turns reverse off again", "PRINT CHR$(147);CHR$(18);CHR$(146);\"A\"",
+         []{ return scr.peekScreen(0) == 1; });
+    ctrl("CHR$(19) sends the cursor home", "PRINT CHR$(147);\"AB\";CHR$(19);\"C\"",
+         []{ return scr.peekScreen(0) == 3 && scr.peekScreen(1) == 2; });
+    ctrl("CHR$(17) moves the cursor down", "PRINT CHR$(147);CHR$(17);\"D\"",
+         []{ return scr.peekScreen(40) == 4; });
+    ctrl("colour survives into the next PRINT", "PRINT CHR$(147);CHR$(30);:PRINT \"G\"",
+         []{ return scr.peekColor(0) == 5; });
 
     // --- font table integrity -------------------------------------------
     // A single entry silently dropping out shifts every glyph after it. That
