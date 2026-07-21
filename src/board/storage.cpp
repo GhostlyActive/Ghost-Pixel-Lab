@@ -21,7 +21,16 @@ bool beginFlash() {
 bool beginSD() {
     if (s_sd) return true;
     SD_MMC.setPins(pins::SD_CLK, pins::SD_CMD, pins::SD_DATA);
-    s_sd = SD_MMC.begin("/sdcard", true /*1-bit bus*/);
+    // format_if_mount_failed only helps a card that answers but carries no
+    // usable filesystem; it cannot rescue a card that stays silent.
+    // A freshly powered card may need a moment before it replies to ACMD41,
+    // and a marginal contact often succeeds on a later try — so retry a few
+    // times at the conservative 20 MHz clock instead of giving up at once.
+    for (int attempt = 0; attempt < 3 && !s_sd; ++attempt) {
+        if (attempt) delay(150);
+        s_sd = SD_MMC.begin("/sdcard", true /*1-bit bus*/,
+                            true /*format if unmountable*/, SDMMC_FREQ_DEFAULT);
+    }
     return s_sd;
 }
 

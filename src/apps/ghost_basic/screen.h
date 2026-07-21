@@ -1,0 +1,78 @@
+// The text screen: a 40x25 grid of screen codes plus per-cell colour RAM,
+// a single global background, and a border. Knows nothing about the display —
+// it only holds the matrix and exposes a printing/cursor API. render() is the
+// one place that turns the matrix into pixels, so the model stays testable and
+// the renderer stays swappable.
+//
+// Control codes understood by put(): 0x0D (RETURN -> new line), 0x14 (DELETE
+// -> backspace). Everything else prints via the PETSCII->screen-code map.
+#pragma once
+
+#include "board/surface.h"
+#include "petscii.h"
+#include "palette.h"
+
+#include <cstdint>
+
+namespace apps::ghost {
+
+class Screen {
+public:
+    static constexpr int COLS = 40;
+    static constexpr int ROWS = 25;
+    static constexpr int PIXW = COLS * petscii::CW;  // 320
+    static constexpr int PIXH = ROWS * petscii::CH;  // 200
+
+    // Wipe to spaces in the current text colour, cursor home.
+    void reset();
+
+    // Cursor.
+    void home()                      { cx_ = 0; cy_ = 0; }
+    void setCursor(int x, int y);
+    int  cursorX() const             { return cx_; }
+    int  cursorY() const             { return cy_; }
+
+    // Colours (C64 colour codes 0..15).
+    void setTextColor(uint8_t c)     { text_ = c & 0x0F; }
+    void setBackground(uint8_t c)    { bg_ = c & 0x0F; }
+    void setBorder(uint8_t c)        { border_ = c & 0x0F; }
+    uint8_t textColor() const        { return text_; }
+
+    // Printing.
+    void put(uint8_t petscii);                 // one char or control code
+    void print(const char* s);                 // convenience for banners
+    void newLine();
+
+    // Direct matrix access (screen code carries reverse-video in bit 7).
+    void poke(int x, int y, uint8_t screenCode, uint8_t color);
+    uint8_t peekCode(int x, int y) const;
+
+    // Read a single physical row back as PETSCII text (trailing spaces
+    // trimmed, NUL-terminated). Returns the character count.
+    int readLine(int row, char* out, int outSize) const;
+
+    // Read the whole *logical* line containing `row` — a line that wrapped past
+    // column 40 spans two physical rows (up to 80 chars), exactly like the C64.
+    // Returns the index of the line's last physical row (for cursor placement).
+    int readLogicalLine(int row, char* out, int outSize) const;
+
+    // Paint the matrix into the surface. cursorOn toggles the reverse block at
+    // the cursor cell so the caller can blink it.
+    void render(board::gfx::Surface& s, bool cursorOn) const;
+
+private:
+    int  index(int x, int y) const   { return y * COLS + x; }
+    void scrollUp();
+    void drawCell(board::gfx::Surface& s, int col, int row,
+                  uint8_t code, uint8_t color, bool reverse) const;
+
+    uint8_t code_[ROWS * COLS] = {};   // screen codes (bit 7 = reverse video)
+    uint8_t color_[ROWS * COLS] = {};  // colour RAM, 0..15
+    bool    cont_[ROWS] = {};          // row continues the logical line above it
+    int     cx_ = 0, cy_ = 0;          // cursor cell
+    uint8_t text_   = COL_LTBLUE;      // current text colour
+    uint8_t bg_     = COL_BLUE;        // global background
+    uint8_t border_ = COL_LTBLUE;      // border
+};
+
+} // namespace apps::ghost

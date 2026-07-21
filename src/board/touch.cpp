@@ -1,6 +1,9 @@
 #include "touch.h"
+#include "expander.h"
 #include "i2c.h"
 #include "pins.h"
+
+#include <Arduino.h>
 
 namespace board::touch {
 
@@ -11,7 +14,16 @@ constexpr uint8_t REG_TD_STATUS = 0x02;
 } // namespace
 
 bool begin() {
-    return i2c::probe(pins::FT3168_ADDR);
+    // The FT3168 hangs off EXIO2 (active-low reset). Nothing pulses it at
+    // power-up — the expander only parks its outputs high — so the controller
+    // sometimes never starts answering on I2C and touch silently comes up
+    // dead. Reset it properly, then give it a few tries to enumerate.
+    expander::resetPulse(pins::EXIO_TP_RST);
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (i2c::probe(pins::FT3168_ADDR)) return true;
+        delay(20);
+    }
+    return false;
 }
 
 Point read() {

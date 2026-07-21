@@ -38,16 +38,32 @@ Product page: <https://www.waveshare.com/esp32-s3-touch-amoled-1.8.htm>
 
 ## Apps
 
-Boots into a touch launcher; every experiment is one small app class.
-Currently on board: **Outer Pixels** (Outer-Wilds-style space sim — fly between
-orbiting planets and drop onto a voxel surface), **Cube 3D** (IMU wireframe),
-**Sensor Lab** (hardware dashboard), **Echo** (mic → speaker), **Piano** (touch
-synth), **Sand** (falling sand + tilt), **Maze Ball**, **Level** (spirit
-level), **Music** (MP3 from flash & SD), **WiFi Scan**, **Pad Lab** (Xbox
-controller over BLE, incl. rumble).
+Boots into a touch launcher. The first screen holds the two headline apps —
+**Ghost BASIC** and **Outer Pixels** — with everything else behind *Others*.
+
+**Ghost BASIC** — a Commodore-64-style computer you program in BASIC.
+**Outer Pixels** — Outer-Wilds-style space sim: fly between orbiting planets
+and drop onto a voxel surface.
+
+Others: **BLE Scan** (find and pair a Bluetooth keyboard), **Disk** (storage
+info + format), **Cube 3D** (IMU wireframe), **Sensor Lab** (hardware
+dashboard), **Echo** (mic → speaker), **Piano** (touch synth), **Sand**
+(falling sand + tilt), **Maze Ball**, **Level** (spirit level), **Music** (MP3
+from flash & SD), **WiFi Scan**, **Pad Lab** (Xbox controller over BLE, incl.
+rumble).
 
 Tap to launch — BOOT key or a swipe from the top edge goes back, the PWR key
 cycles brightness.
+
+## Ghost BASIC
+
+A Commodore 64 in spirit, not an emulator: a 40 × 25 PETSCII screen with its
+own hand-drawn 8 × 8 font, the authentic screen editor (cursor up to an old
+line, change it, press RETURN and it is re-entered), and a BASIC V2-flavoured
+interpreter down to the original error messages. Type on a Bluetooth-LE
+keyboard, or on the USB serial console when none is paired.
+
+Language reference and example programs: **[docs/GHOST_BASIC.md](docs/GHOST_BASIC.md)**.
 
 ## Outer Pixels
 
@@ -63,7 +79,8 @@ Requires [PlatformIO](https://platformio.org/).
 ```sh
 pio run -t upload      # build + flash
 pio run -t uploadfs    # flash the data/ folder (assets, mp3s)
-pio device monitor     # serial @ 115200
+pio device monitor     # serial @ 115200 — doubles as Ghost BASIC's keyboard
+./test/c64/run.sh      # run the BASIC interpreter suite on the host
 ```
 
 ## Layout
@@ -71,11 +88,23 @@ pio device monitor     # serial @ 115200
 ```
 src/
   main.cpp      # composition root: board init + app registration
-  core/         # engine: App interface, manager, menu, sound mixer
+  core/         # engine: App interface, manager, menu, files, keyboard, sound
   apps/         # one file pair per experiment
+    c64/        # Ghost BASIC internals: screen, editor, BASIC, font
   board/        # hardware modules (display, imu, touch, audio, storage, ...)
 data/           # assets packed into LittleFS
-docs/           # developer guide
+docs/           # developer guide + Ghost BASIC manual
+test/c64/       # host-side interpreter suite (no hardware needed)
+```
+
+Files live under `/GHOST` on the SD card, or on internal flash when no card is
+present — `core::files` picks one and every app shares the layout:
+
+```
+/GHOST/BASIC   BASIC programs (SAVE / LOAD / DIRECTORY)
+/GHOST/DATA    app data
+/GHOST/SYS     settings, e.g. the paired keyboard
+/GHOST/APPS    one folder per app
 ```
 
 ## Documentation
@@ -83,6 +112,8 @@ docs/           # developer guide
 How to write an app, the engine APIs, code examples for sound/MP3, sprites,
 storage, Wi-Fi/BLE, buttons, configuration and performance — all in the
 **[Developer Guide](docs/GUIDE.md)**.
+
+Programming the machine itself: **[Ghost BASIC manual](docs/GHOST_BASIC.md)**.
 
 ## Status
 

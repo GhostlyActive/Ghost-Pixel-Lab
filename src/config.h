@@ -27,6 +27,13 @@ inline constexpr uint8_t BRIGHTNESS_STEPS[]  = {255, 140, 50};
 // --- Audio -------------------------------------------------------------------
 inline constexpr uint8_t DEFAULT_VOLUME = 30;  // master volume at boot, 0..100
 
+// --- Bluetooth -----------------------------------------------------------------
+// Log every newly discovered BLE device to serial. Invaluable when hunting for
+// a keyboard: anything that does not appear here cannot be used. Note the
+// ESP32-S3 has no Bluetooth-Classic radio, so Classic-only keyboards are
+// invisible by design, not by bug.
+inline constexpr bool BLE_SCAN_LOG = true;
+
 // --- Gamepad -------------------------------------------------------------------
 inline constexpr float PAD_DEADZONE = 0.10f;  // stick deadzone, 0..1
 

@@ -9,6 +9,7 @@
 #include <Arduino.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace core::menu {
 
@@ -40,6 +41,9 @@ public:
         pressIdx_ = -1;
         tracking_ = false;
         statusMs_ = 0;  // force a status refresh on the first frame
+        view_     = View::Root;
+        scrollY_  = 0;
+        buildRows();
     }
 
     void update(const Input& in, float) override {
@@ -50,18 +54,52 @@ public:
     void render(Surface& s) override;
 
 private:
+    // A row is either an app to launch or a navigation entry.
+    enum class Kind : uint8_t { App, OpenOthers, Back };
+    struct Row { Kind kind; App* app; const char* label; const char* info; };
+
+    enum class View : uint8_t { Root, Others };
+
+    // Apps promoted to the first screen, in this order.
+    static bool isFavourite(const char* n) {
+        return std::strcmp(n, "Ghost BASIC") == 0 || std::strcmp(n, "Outer Pixels") == 0;
+    }
+
+    void buildRows() {
+        rowCount_ = 0;
+        auto push = [&](Kind k, App* a, const char* l, const char* i) {
+            if (rowCount_ < MAX_ROWS) rows_[rowCount_++] = Row{k, a, l, i};
+        };
+
+        if (view_ == View::Root) {
+            static const char* kFav[] = {"Ghost BASIC", "Outer Pixels"};
+            for (const char* want : kFav)
+                for (int i = 0; i < manager::count(); ++i)
+                    if (std::strcmp(manager::at(i).name(), want) == 0)
+                        push(Kind::App, &manager::at(i), manager::at(i).name(),
+                             manager::at(i).info());
+            push(Kind::OpenOthers, nullptr, "Others", "everything else");
+        } else {
+            push(Kind::Back, nullptr, "Back", "to the main screen");
+            for (int i = 0; i < manager::count(); ++i)
+                if (!isFavourite(manager::at(i).name()))
+                    push(Kind::App, &manager::at(i), manager::at(i).name(),
+                         manager::at(i).info());
+        }
+    }
+
     int listHeight() const {
         return board::display::HEIGHT - LIST_TOP - STATUS_H - 6;
     }
 
     int maxScroll() const {
-        const int overflow = manager::count() * ROW_H - listHeight();
+        const int overflow = rowCount_ * ROW_H - listHeight();
         return overflow > 0 ? overflow : 0;
     }
 
     int rowAt(int y) const {
         const int idx = (y - LIST_TOP + static_cast<int>(scrollY_)) / ROW_H;
-        return (idx >= 0 && idx < manager::count()) ? idx : -1;
+        return (idx >= 0 && idx < rowCount_) ? idx : -1;
     }
 
     // tracking_ guards against presses that began outside the menu (e.g. the
@@ -83,10 +121,14 @@ private:
             if (scrollY_ > maxScroll()) scrollY_ = static_cast<float>(maxScroll());
         } else if (in.justReleased && tracking_) {
             tracking_ = false;
-            if (pressIdx_ >= 0) {
-                const int idx = pressIdx_;
+            if (pressIdx_ >= 0 && pressIdx_ < rowCount_) {
+                const Row r = rows_[pressIdx_];
                 pressIdx_ = -1;
-                manager::launch(manager::at(idx));
+                switch (r.kind) {
+                case Kind::App:        if (r.app) manager::launch(*r.app); break;
+                case Kind::OpenOthers: view_ = View::Others; scrollY_ = 0; buildRows(); break;
+                case Kind::Back:       view_ = View::Root;   scrollY_ = 0; buildRows(); break;
+                }
             }
         }
     }
@@ -100,6 +142,11 @@ private:
         charging_ = hw::power && board::power::charging();
         timeOk_   = hw::rtc && board::rtc::read(time_);
     }
+
+    static constexpr int MAX_ROWS = manager::MAX_APPS + 2;
+    Row     rows_[MAX_ROWS]{};
+    int     rowCount_ = 0;
+    View    view_     = View::Root;
 
     float   scrollY_  = 0;
     int     pressIdx_ = -1;
@@ -121,22 +168,25 @@ void MenuApp::render(Surface& s) {
 
     s.clear(COL_BG);
 
-    // App list first; header and status bar paint over the overflow.
-    for (int i = 0; i < manager::count(); ++i) {
+    // Row list first; header and status bar paint over the overflow.
+    for (int i = 0; i < rowCount_; ++i) {
         const int y = LIST_TOP + i * ROW_H - static_cast<int>(scrollY_);
         if (y + ROW_H < LIST_TOP || y > H - STATUS_H) continue;
+        const Row& r = rows_[i];
+        const bool nav = r.kind != Kind::App;
         const uint16_t bg = (i == pressIdx_) ? COL_ROW_HI : COL_ROW;
         s.fillRect(MARGIN, y, W - 2 * MARGIN, ROW_H - ROW_PAD, bg);
-        s.fillRect(MARGIN, y, 5, ROW_H - ROW_PAD, COL_ACCENT);
-        s.text(MARGIN + 20, y + 14, manager::at(i).name(), COL_TEXT, 3);
-        s.text(MARGIN + 20, y + 46, manager::at(i).info(), COL_DIM, 2);
-        s.text(W - MARGIN - 26, y + 26, ">", COL_ACCENT, 3);
+        s.fillRect(MARGIN, y, 5, ROW_H - ROW_PAD, nav ? COL_DIM : COL_ACCENT);
+        s.text(MARGIN + 20, y + 14, r.label, COL_TEXT, 3);
+        s.text(MARGIN + 20, y + 46, r.info, COL_DIM, 2);
+        s.text(W - MARGIN - 26, y + 26, r.kind == Kind::Back ? "<" : ">",
+               nav ? COL_DIM : COL_ACCENT, 3);
     }
 
     // Header. The background mask is only needed when rows can scroll
     // underneath it.
     if (maxScroll() > 0) s.fillRect(0, 0, W, LIST_TOP - 6, COL_BG);
-    const char* title = "GHOST PIXEL LAB";
+    const char* title = view_ == View::Root ? "GHOST PIXEL LAB" : "OTHERS";
     s.text((W - s.textWidth(title, 3)) / 2, 24, title, COL_ACCENT, 3);
     const char* hint = "tap an app  *  BOOT or top-swipe = back";
     s.text((W - s.textWidth(hint, 1)) / 2, 58, hint, COL_DIM, 1);

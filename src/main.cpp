@@ -17,6 +17,7 @@
 #include "board/storage.h"
 
 #include "core/app_manager.h"
+#include "core/files.h"
 #include "core/hw.h"
 
 #include "apps/cube3d.h"
@@ -30,6 +31,9 @@
 #include "apps/wifi_scan.h"
 #include "apps/pad_lab.h"
 #include "apps/outer_pixels.h"
+#include "apps/ghost_basic.h"
+#include "apps/ble_scan.h"
+#include "apps/disk.h"
 
 namespace core::hw {
 bool imu = false, touch = false, power = false, rtc = false;
@@ -48,6 +52,9 @@ apps::Music         musicApp;
 apps::WifiScan      wifiScanApp;
 apps::PadLab        padLabApp;
 apps::Outer_Pixels  outerPixelsApp;
+apps::GhostBasic           ghostBasicApp;
+apps::BleScan       bleScanApp;
+apps::Disk          diskApp;
 }
 
 void setup() {
@@ -69,6 +76,7 @@ void setup() {
     core::hw::rtc     = board::rtc::begin();
     core::hw::flashFs = board::storage::beginFlash();
     core::hw::sd      = board::storage::beginSD();
+    core::files::begin();   // /GHOST layout on SD, or flash as fallback
     Serial.printf("[boot] imu=%d touch=%d pmu=%d rtc=%d fs=%d sd=%d\n",
                   core::hw::imu, core::hw::touch, core::hw::power,
                   core::hw::rtc, core::hw::flashFs, core::hw::sd);
@@ -84,6 +92,9 @@ void setup() {
     core::manager::add(wifiScanApp);
     core::manager::add(padLabApp);
     core::manager::add(outerPixelsApp);
+    core::manager::add(ghostBasicApp);
+    core::manager::add(bleScanApp);
+    core::manager::add(diskApp);
     core::manager::begin();
 }
 

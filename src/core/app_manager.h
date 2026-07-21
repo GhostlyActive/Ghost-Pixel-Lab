@@ -12,7 +12,7 @@
 
 namespace core::manager {
 
-inline constexpr int MAX_APPS = 16;
+inline constexpr int MAX_APPS = 24;
 
 // Registration; call from setup() before begin().
 void add(App& app);
