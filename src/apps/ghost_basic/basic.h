@@ -12,6 +12,7 @@
 
 #include "screen.h"
 #include "sid.h"
+#include "sprites.h"
 
 #include <cstdint>
 #include <string>
@@ -43,6 +44,10 @@ public:
     // The sound chip lives in the app so it can also drive the speaker; POKEs
     // to 54272.. are routed here.
     void setSid(Sid* s) { sid_ = s; }
+    // The VIC-II sprites live in the app so it can draw them; POKEs to 53248..
+    // are routed here. The app also reads the shapes back out of RAM to render.
+    void setSprites(Sprites* s) { sprites_ = s; }
+    const uint8_t* ram() const { return ram_; }
 
     enum class Mode { Idle, Running, Input };
 
@@ -111,6 +116,10 @@ private:
     void doBreak();                   // STOP / RUN-STOP: print BREAK, save CONT
 
     void stPrint(); void stIf(); void stFor(); void stNext();
+    // One target of a NEXT (an explicit variable, or the innermost loop when
+    // unnamed). Returns true if the loop iterated and control jumped back into
+    // it, which ends a comma list early — NEXT J,I only reaches I once J is done.
+    bool nextOne(bool named, char n0, char n1);
     void stGoto(); void stGosub(); void stReturn(); void stOn();
     void stInput(); void stGet(); void stDim(); void stRead();
     void stPoke(); void stDef(); void stAssign();
@@ -218,6 +227,7 @@ private:
 
     Files*   files_ = nullptr;        // SAVE / LOAD backend, null = no drive
     Sid*     sid_   = nullptr;        // sound chip at 54272, null = silent
+    Sprites* sprites_ = nullptr;      // VIC-II sprites at 53248, null = none
     uint8_t* ram_ = nullptr;          // 64K for POKE/PEEK (+ future HW mapping)
     uint32_t rngState_ = 0x1234567u;
 

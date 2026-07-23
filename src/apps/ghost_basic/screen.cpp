@@ -1,4 +1,5 @@
 #include "screen.h"
+#include "sprites.h"
 #include "board/display.h"
 
 #include <cstring>
@@ -265,6 +266,42 @@ void Screen::render(Surface& s, bool cursorOn) const {
             bool reverse = code & 0x80;
             if (cursorOn && x == cx_ && y == cy_) reverse = !reverse;
             drawCell(s, x, y, code, color_[i], reverse);
+        }
+    }
+}
+
+void Screen::renderSprites(Surface& s, const Sprites& spr, const uint8_t* ram) const {
+    if (!ram) return;
+
+    // One source pixel of the 320x200 field, expanded to a zoom block and
+    // rotated the same way the characters are — so sprites stay pixel-aligned
+    // with the text underneath them.
+    auto plot = [&](int sx, int sy, uint16_t color) {
+        const int x0 = OX + sx * ZN / ZD, x1 = OX + (sx + 1) * ZN / ZD;
+        const int y0 = OY + sy * ZN / ZD, y1 = OY + (sy + 1) * ZN / ZD;
+        fillL(s, x0, y0, x1 - x0, y1 - y0, color);
+    };
+
+    // Sprite 0 has the highest priority, so paint 7 first and let 0 land on top.
+    for (int i = Sprites::COUNT - 1; i >= 0; --i) {
+        if (!spr.enabled(i)) continue;
+        const bool xe = spr.expandX(i), ye = spr.expandY(i);
+        const int physW = 24 * (xe ? 2 : 1);
+        const int physH = 21 * (ye ? 2 : 1);
+        const int left = spr.posX(i), top = spr.posY(i);
+
+        for (int dy = 0; dy < physH; ++dy) {
+            const int ty = top + dy - 50;                 // into the 0..199 field
+            if ((unsigned)ty >= (unsigned)PIXH) continue;
+            const int row = ye ? dy / 2 : dy;
+            for (int dx = 0; dx < physW; ++dx) {
+                const int hx = xe ? dx / 2 : dx;
+                const int col = spr.pixelColor(i, ram, hx, row);
+                if (col < 0) continue;
+                const int tx = left + dx - 24;             // into the 0..319 field
+                if ((unsigned)tx >= (unsigned)PIXW) continue;
+                plot(tx, ty, PALETTE[col]);
+            }
         }
     }
 }

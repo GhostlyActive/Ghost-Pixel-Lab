@@ -34,6 +34,7 @@ struct FakeFiles final : public Files {
 };
 static FakeFiles g_files;
 static Sid g_sid;
+static Sprites g_spr;
 
 static int passN = 0, failN = 0;
 
@@ -153,6 +154,7 @@ static void checkProg(const char* name, const std::vector<std::string>& lines,
 int main() {
     basic.setFiles(&g_files);
     basic.setSid(&g_sid);
+    basic.setSprites(&g_spr);
 
     // --- arithmetic & precedence ---
     checkExpr("2+3*4", "14");
@@ -356,6 +358,20 @@ int main() {
          "30 PRINT T"}, {"8"});
     checkProg("NEXT may name its variable",
         {"10 FOR I=1 TO 3:PRINT I:NEXT I"}, {"1", "2", "3"});
+    // NEXT J,I closes two loops in one statement, exactly like NEXT J : NEXT I.
+    checkProg("NEXT closes several loops at once",
+        {"10 FOR I=1 TO 2", "20 FOR J=1 TO 2", "30 PRINT I*10+J", "40 NEXT J,I",
+         "50 PRINT \"D\""}, {"11", "12", "21", "22", "D"});
+    // A comma list runs left to right: the inner variable has to come first.
+    checkProg("NEXT J,I visits the inner loop first",
+        {"10 FOR I=1 TO 2:FOR J=1 TO 2:T=T+1:NEXT J,I", "20 PRINT T"}, {"4"});
+    // Naming an outer variable abandons the inner loop still on the stack — the
+    // C64 way of breaking out of a nested loop early.
+    checkProg("NEXT of an outer var drops the inner loop",
+        {"10 FOR I=1 TO 3", "20 FOR J=1 TO 9", "30 PRINT I", "40 NEXT I",
+         "50 PRINT \"D\""}, {"1", "2", "3", "D"});
+    checkProg("NEXT with an unknown variable is an error",
+        {"10 FOR I=1 TO 3:NEXT K"}, {"?NEXT WITHOUT FOR ERROR IN 10"});
     checkProg("the counter survives the loop",
         {"10 FOR I=1 TO 3:NEXT", "20 PRINT I"}, {"4"});
     checkProg("a negative STEP that never runs still runs once",
@@ -791,6 +807,183 @@ int main() {
             else { ++failN; std::printf("FAIL  SID: sustain 0 stays busy (tail %ld, active %d)\n",
                                         tail, int(g_sid.active())); }
         }
+
+        // Hard sync resets the slave once, on the exact sample the master's
+        // MSB rises. Voice 3 syncs to voice 2; the osc-3 tap at 54299 exposes
+        // the phase, which must match the documented arithmetic (inc = freq *
+        // clock / rate, phase restarts at the rise). Pinning the slave for a
+        // stretch of samples — the easy mistake — lands on a different byte.
+        {
+            g_sid.reset(); g_sid.setSampleRate(16000);
+            const int FM = 2000, FS = 7000;                       // odd ratio on purpose
+            g_sid.write(7,  FM & 0xFF); g_sid.write(8,  FM >> 8); // master: voice 2
+            g_sid.write(14, FS & 0xFF); g_sid.write(15, FS >> 8); // slave: voice 3
+            g_sid.write(18, 0x02);                                // sync, oscillator only
+            const int N = 1000;
+            g_sid.render(buf.data(), N);
+
+            const uint32_t incM = uint32_t((uint64_t(FM) * Sid::CLOCK) / 16000u);
+            const uint32_t incS = uint32_t((uint64_t(FS) * Sid::CLOCK) / 16000u);
+            uint32_t pm = 0; int lastRise = 0;
+            for (int n = 1; n <= N; ++n) {
+                const uint32_t before = pm;
+                pm = (pm + incM) & 0xFFFFFF;
+                if (!(before & 0x800000) && (pm & 0x800000)) lastRise = n;
+            }
+            const uint32_t wantPhase = (uint32_t(N - lastRise) * incS) & 0xFFFFFF;
+            const uint8_t wantTap = uint8_t(wantPhase >> 16);
+            const uint8_t gotTap  = g_sid.read(27);
+            if (gotTap == wantTap) ++passN;
+            else { ++failN; std::printf("FAIL  SID sync: osc3 tap %d, expected %d\n", gotTap, wantTap); }
+        }
+
+        // The release is the chip's slowing ladder, not a straight line: with
+        // release 4 (~114 ms nominal) a linear fall is already silent right
+        // after the nominal time — the ladder still sounds there, and only the
+        // long tail dies away.
+        {
+            g_sid.reset(); g_sid.setSampleRate(16000);
+            g_sid.write(24, 15);
+            g_sid.write(0, 100); g_sid.write(1, 20);
+            g_sid.write(5, 0x00); g_sid.write(6, 0xF4);   // sustain 15, release 4
+            g_sid.write(4, 0x21);                          // saw + gate
+            g_sid.render(buf.data(), 3200);                // settle at full level
+            g_sid.write(4, 0x20);                          // gate off
+            g_sid.render(buf.data(), 2400);                // 150 ms: linear would be gone
+            long after = 0;
+            g_sid.render(buf.data(), 800);
+            for (int n = 0; n < 800; ++n) after = std::max<long>(after, std::abs(long(buf[n])));
+            g_sid.render(buf.data(), 16000);               // a second later: truly out
+            long relTail = 0;
+            for (int n = 8000; n < 16000; ++n) relTail = std::max<long>(relTail, std::abs(long(buf[n])));
+            if (after > 150 && relTail == 0) ++passN;
+            else { ++failN; std::printf("FAIL  SID release curve: after-nominal %ld, tail %ld\n",
+                                        after, relTail); }
+        }
+
+        // Outside attack the envelope only falls: raising sustain mid-note
+        // must not lift the level, lowering it drags the voice down.
+        {
+            g_sid.reset(); g_sid.setSampleRate(16000);
+            g_sid.write(24, 15);
+            g_sid.write(0, 100); g_sid.write(1, 20);
+            g_sid.write(5, 0x08);                 // attack 0, decay 8
+            g_sid.write(6, 0x80);                 // sustain 8
+            g_sid.write(4, 0x21);
+            g_sid.render(buf.data(), 9600);       // settled at 8/15 of full
+            auto peakNext = [&](int samples) {
+                long p = 0;
+                while (samples > 0) {
+                    const int n = samples > int(buf.size()) ? int(buf.size()) : samples;
+                    g_sid.render(buf.data(), n);
+                    for (int k = 0; k < n; ++k) p = std::max<long>(p, std::abs(long(buf[k])));
+                    samples -= n;
+                }
+                return p;
+            };
+            const long at8 = peakNext(1600);
+            g_sid.write(6, 0xF0);                 // try to RAISE sustain to 15
+            const long raised = peakNext(1600);
+            g_sid.write(6, 0x20);                 // lower it to 2
+            peakNext(8000);                        // give it time to fall
+            const long lowered = peakNext(1600);
+            if (raised <= at8 + at8 / 8 && lowered < at8 / 2) ++passN;
+            else { ++failN; std::printf("FAIL  SID sustain: at8=%ld raised=%ld lowered=%ld\n",
+                                        at8, raised, lowered); }
+        }
+    }
+
+    // --- VIC-II sprites ----------------------------------------------------
+    {
+        // Set sprite 0 up the way a listing does: a solid 24x21 block poked
+        // into memory at 832, the pointer aimed at it, a colour, a position and
+        // the enable bit. All of it goes through POKE and the address router.
+        auto setup = []() {
+            basic.reset(); scr.reset(); g_spr.reset();
+            typeEnter("FOR I=0 TO 62:POKE 832+I,255:NEXT");   // solid shape at 832
+            typeEnter("POKE 2040,13");                         // sprite 0 -> 13*64
+            typeEnter("POKE 53287,1");                         // colour white
+            typeEnter("POKE 53248,100:POKE 53249,100");        // X=100, Y=100
+            typeEnter("POKE 53269,1");                          // enable sprite 0
+        };
+        auto peek = [](const char* addr) {
+            scr.reset();
+            typeEnter(std::string("PRINT PEEK(") + addr + ")");
+            char b[81]; scr.readLine(1, b, sizeof b); return trim(b);
+        };
+
+        setup();
+        if (peek("53269") == "1") ++passN;
+        else { ++failN; std::printf("FAIL  sprite: enable does not read back\n"); }
+
+        // A solid pixel decodes to the sprite's colour; the shape is 24x21, so
+        // column 24 / row 21 are already outside it.
+        if (g_spr.pixelColor(0, basic.ram(), 0, 0) == 1 &&
+            g_spr.pixelColor(0, basic.ram(), 23, 20) == 1 &&
+            g_spr.pixelColor(0, basic.ram(), 24, 0) == -1) ++passN;
+        else { ++failN; std::printf("FAIL  sprite: hires pixel decode\n"); }
+
+        // The 9th X bit at 53264 lifts the position past 255.
+        setup();
+        typeEnter("POKE 53248,44:POKE 53264,1");
+        if (g_spr.posX(0) == 300) ++passN;
+        else { ++failN; std::printf("FAIL  sprite: X MSB, got %d\n", g_spr.posX(0)); }
+
+        // Two solid sprites on the same spot collide; 53278 names both, and a
+        // second read comes back clear — the chip empties it on read.
+        setup();
+        typeEnter("POKE 2041,13");                    // sprite 1 shares the shape
+        typeEnter("POKE 53250,100:POKE 53251,100");   // and the position
+        typeEnter("POKE 53269,3");                     // enable 0 and 1
+        g_spr.updateCollisions(basic.ram());
+        const std::string hit = peek("53278"), again = peek("53278");
+        if (hit == "3" && again == "0") ++passN;
+        else { ++failN; std::printf("FAIL  sprite collision: [%s] then [%s], want [3] [0]\n",
+                                    hit.c_str(), again.c_str()); }
+
+        // Move sprite 1 clear of sprite 0 (24 px wide): no overlap, no hit.
+        setup();
+        typeEnter("POKE 2041,13:POKE 53269,3");
+        typeEnter("POKE 53250,140:POKE 53251,100");   // 40 px to the right
+        g_spr.updateCollisions(basic.ram());
+        if (peek("53278") == "0") ++passN;
+        else { ++failN; std::printf("FAIL  sprite: apart but still colliding\n"); }
+
+        // X-expand doubles sprite 0 to 48 px wide, which now reaches sprite 1.
+        typeEnter("POKE 53277,1");                     // expand sprite 0 in X
+        g_spr.updateCollisions(basic.ram());
+        if (peek("53278") == "3") ++passN;
+        else { ++failN; std::printf("FAIL  sprite: X-expand does not extend collision\n"); }
+
+        // Multicolour reads the shape as bit pairs: %01 -> 53285, %11 -> 53286,
+        // %10 -> the sprite's own colour, %00 transparent.
+        setup();
+        typeEnter("POKE 832,27");        // row 0 byte 0 = 00 01 10 11 (pairs)
+        typeEnter("POKE 53276,1");       // sprite 0 multicolour
+        typeEnter("POKE 53285,5:POKE 53286,6");  // mc0=5, mc1=6 (colour is 1)
+        if (g_spr.pixelColor(0, basic.ram(), 0, 0) == -1 &&   // %00 transparent
+            g_spr.pixelColor(0, basic.ram(), 2, 0) == 5  &&   // %01 -> mc0
+            g_spr.pixelColor(0, basic.ram(), 4, 0) == 1  &&   // %10 -> colour
+            g_spr.pixelColor(0, basic.ram(), 6, 0) == 6) ++passN;   // %11 -> mc1
+        else { ++failN; std::printf("FAIL  sprite: multicolour decode\n"); }
+
+        // The renderer paints the shape: a solid on-screen sprite is exactly
+        // 24x21 = 504 pixels of its colour, and none once it is disabled.
+        setup();
+        scr.reset();
+        static std::vector<uint16_t> buf(board::display::WIDTH * board::display::HEIGHT);
+        board::gfx::Surface surf{buf.data(), board::display::WIDTH, board::display::HEIGHT};
+        scr.render(surf, false);
+        scr.renderSprites(surf, g_spr, basic.ram());
+        auto countColor = [&](uint16_t c) {
+            int n = 0; for (uint16_t p : buf) if (p == c) ++n; return n; };
+        const int white = countColor(PALETTE[1]);
+        typeEnter("POKE 53269,0");        // disable
+        scr.reset(); scr.render(surf, false); scr.renderSprites(surf, g_spr, basic.ram());
+        const int whiteOff = countColor(PALETTE[1]);
+        if (white == 504 && whiteOff == 0) ++passN;
+        else { ++failN; std::printf("FAIL  sprite render: on=%d (want 504) off=%d (want 0)\n",
+                                    white, whiteOff); }
     }
 
     // --- file I/O: OPEN / CLOSE / PRINT# / INPUT# / GET# / CMD ------------

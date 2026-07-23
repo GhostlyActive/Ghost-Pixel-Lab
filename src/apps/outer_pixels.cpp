@@ -1,5 +1,6 @@
 #include "outer_pixels.h"
 #include "core/pad.h"
+#include "core/keyboard.h"
 #include "core/app_manager.h"
 #include "board/display.h"
 
@@ -257,6 +258,10 @@ void drawSphere(Surface& s, float scx, float scy, float r, uint16_t base,
 
 void Outer_Pixels::onEnter() {
     core::pad::begin();          // start searching for an Xbox controller (background)
+    core::keyboard::beginSerial();  // typed keys as fallback; leaves BLE to the pad
+
+    kyaw_ = kpitch_ = kroll_ = kthrust_ = 0;
+    kA_ = kY_ = kB_ = false;
 
     t_ = 0;
     updatePlanets(t_);
@@ -333,9 +338,15 @@ void Outer_Pixels::updateSurface(const core::Input& in, float dt) {
         climbIn = pad.ly;                 // stick up = climb, stick down = descend
         throttle = pad.rt - pad.lt;
         exitBtn = pad.b;
-    } else if (in.pressed) {
-        yawIn = (in.x - in.startX) / 120.0f;
-        climbIn = (in.startY - in.y) / 120.0f;       // drag up = climb
+    } else {
+        if (in.pressed) {
+            yawIn = (in.x - in.startX) / 120.0f;
+            climbIn = (in.startY - in.y) / 120.0f;   // drag up = climb
+        }
+        // Typed keys: up-arrow climbs (kpitch_ is negative for nose-up).
+        yawIn += kyaw_; climbIn -= kpitch_;
+        throttle += kthrust_;
+        exitBtn = exitBtn || kB_;
     }
 
     syaw_  += yawIn * SYAW * dt;
@@ -397,7 +408,8 @@ void Outer_Pixels::renderSurface(Surface& s) {
     char hud[40];
     snprintf(hud, sizeof(hud), "SURFACE %s  alt %.0f", p.name, salt_);
     s.text((W - s.textWidth(hud, 2)) / 2, 8, hud, 0xFFFF, 2);
-    s.text(8, H - 16, core::pad::connected() ? "climb to leave   B exit" : "drag to fly",
+    s.text(8, H - 16, core::pad::connected() ? "climb to leave   B exit"
+                                             : "drag or arrows to fly   B leave",
            0x8410, 1);
 
     if (dive_) drawClouds(s, sky);
@@ -426,9 +438,45 @@ void Outer_Pixels::drawClouds(Surface& s, uint16_t sky) {
         }
 }
 
+// Keyboard fallback: with no pad connected, typed keys fly the ship — from the
+// serial console or a BLE keyboard, whichever is delivering. A key press is an
+// impulse onto a virtual stick that decays over a fraction of a second, so the
+// terminal's auto-repeat reads like holding the stick. Impulses are the honest
+// model here: a serial console never reports key releases.
+void Outer_Pixels::pollKeys(float dt) {
+    const float steerDecay  = expf(-6.0f * dt);
+    const float thrustDecay = expf(-2.5f * dt);   // slower: one tap = a burst
+    kyaw_ *= steerDecay; kpitch_ *= steerDecay; kroll_ *= steerDecay;
+    kthrust_ *= thrustDecay;
+    kA_ = kY_ = kB_ = false;
+
+    auto bump = [](float& v, float d) {
+        v += d;
+        if (v > 1) v = 1; else if (v < -1) v = -1;
+    };
+    uint8_t k;
+    while (core::keyboard::next(k)) {
+        switch (k) {
+        case 0x9D: bump(kyaw_,  -0.55f); break;   // cursor left
+        case 0x1D: bump(kyaw_,   0.55f); break;   // cursor right
+        case 0x91: bump(kpitch_, -0.55f); break;  // cursor up = nose up / climb
+        case 0x11: bump(kpitch_,  0.55f); break;  // cursor down
+        case 'Q': case 'q': bump(kroll_, -0.55f); break;
+        case 'E': case 'e': bump(kroll_,  0.55f); break;
+        case 'W': case 'w': bump(kthrust_,  0.7f); break;
+        case 'S': case 's': bump(kthrust_, -0.7f); break;   // brake / reverse
+        case 'A': case 'a': case ' ': kA_ = true; break;    // pick / launch
+        case 'Y': case 'y': kY_ = true; break;              // orbit lines
+        case 'B': case 'b': kB_ = true; break;              // leave the surface
+        default: break;
+        }
+    }
+}
+
 void Outer_Pixels::update(const core::Input& in, float dt) {
     if (dt <= 0) return;
     if (dt > 0.05f) dt = 0.05f;
+    pollKeys(dt);
     if (dive_) { diveT_ += dt; if (diveT_ >= DIVE_TIME) dive_ = 0; }
     if (surface_ >= 0) { updateSurface(in, dt); return; }
     t_ += dt;
@@ -442,10 +490,17 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
         yawIn = pad.lx; pitchIn = pad.ly; rollIn = pad.rx;
         thrust = pad.rt - pad.lt;
         aBtn = pad.a; yBtn = pad.y;
-    } else if (in.pressed) {
-        if (in.x > W - 110 && in.y > H - 110) thrust = 1.0f;
-        else { yawIn = (in.x - in.startX) / 120.0f; pitchIn = (in.y - in.startY) / 120.0f; }
-        aBtn = (in.x < 110 && in.y > H - 110);
+    } else {
+        if (in.pressed) {
+            if (in.x > W - 110 && in.y > H - 110) thrust = 1.0f;
+            else { yawIn = (in.x - in.startX) / 120.0f; pitchIn = (in.y - in.startY) / 120.0f; }
+            aBtn = (in.x < 110 && in.y > H - 110);
+        }
+        // Typed keys stack on top of touch — see pollKeys() for the mapping.
+        yawIn += kyaw_; pitchIn += kpitch_; rollIn += kroll_;
+        thrust += kthrust_;
+        if (thrust > 1) thrust = 1; else if (thrust < -1) thrust = -1;
+        aBtn = aBtn || kA_; yBtn = yBtn || kY_;
     }
 
     // Body-relative rotations: yaw around up, pitch around right, roll around
@@ -759,10 +814,10 @@ void Outer_Pixels::render(Surface& s) {
     // Context hints.
     if (landed_ >= 0) {
         const char* m = core::pad::connected() ? "LANDED  -  A to launch"
-                                               : "LANDED  -  tap lower-left to launch";
+                                               : "LANDED  -  corner or A to launch";
         s.text((W - s.textWidth(m, 2)) / 2, H - 56, m, 0x07E0, 2);
     } else if (!core::pad::connected()) {
-        const char* m = "searching for controller...";
+        const char* m = "no pad - keys: arrows+Q/E fly  W/S thrust  A pick  Y orbits";
         s.text((W - s.textWidth(m, 1)) / 2, H - 52, m, 0x8410, 1);
     } else if (near >= 0 && nd < 25.0f) {
         const char* m = (speed < LAND_SPEED + 8) ? "approach: slow to land"

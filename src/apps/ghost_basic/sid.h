@@ -46,7 +46,7 @@ private:
 
         uint32_t phase = 0;        // 24-bit accumulator, like the original
         uint32_t noise = 0x7FFFF8;
-        bool     lastMsb = false;
+        bool     msbRose = false;  // accumulator MSB went 0->1 this sample (drives sync)
         float    env = 0;
         Phase    ph = ENV_REL;
     };

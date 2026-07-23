@@ -366,10 +366,14 @@ void task(void*) {
 // public API
 // ---------------------------------------------------------------------------
 
+bool beginSerial() {
+    if (!s_lock) s_lock = xSemaphoreCreateMutex();
+    return s_lock != nullptr;
+}
+
 bool begin() {
     if (s_task) return true;
-    s_lock = xSemaphoreCreateMutex();
-    if (!s_lock) return false;
+    if (!beginSerial()) return false;
 
     NimBLEDevice::init("Ghost Pixel Lab");
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);

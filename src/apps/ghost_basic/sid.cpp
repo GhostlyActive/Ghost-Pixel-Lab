@@ -16,6 +16,19 @@ constexpr int REG_VOICE_SIZE = 7;   // freq lo/hi, pw lo/hi, ctrl, ad, sr
 constexpr uint8_t GATE = 0x01, SYNC = 0x02, RING = 0x04, TEST = 0x08;
 constexpr uint8_t TRI  = 0x10, SAW  = 0x20, PULSE = 0x40, NOISE = 0x80;
 
+// Decay and release are not straight lines on the chip: an exponential ladder
+// stretches the step period as the level falls (x2 below 93/255, x4 below
+// 54/255, and so on down to x30 near silence). Attack stays linear — that
+// asymmetry, fast rise and long dying tail, is the SID's signature shape.
+float fallScale(float env) {
+    if (env > 93.0f / 255.0f) return 1.0f;
+    if (env > 54.0f / 255.0f) return 2.0f;
+    if (env > 26.0f / 255.0f) return 4.0f;
+    if (env > 14.0f / 255.0f) return 8.0f;
+    if (env >  6.0f / 255.0f) return 16.0f;
+    return 30.0f;
+}
+
 } // namespace
 
 void Sid::setSampleRate(int hz) { rate_ = hz > 0 ? hz : 16000; }
@@ -139,7 +152,9 @@ void Sid::render(int16_t* out, int count) {
                     const uint32_t bit = ((v.noise >> 22) ^ (v.noise >> 17)) & 1;
                     v.noise = ((v.noise << 1) | bit) & 0x7FFFFF;
                 }
-                v.lastMsb = (v.phase & 0x800000) != 0;
+                v.msbRose = !(before & 0x800000) && (v.phase & 0x800000);
+            } else {
+                v.msbRose = false;   // a held oscillator cannot trigger sync
             }
 
             // --- envelope ---------------------------------------------------
@@ -150,14 +165,21 @@ void Sid::render(int16_t* out, int count) {
                 if (v.env >= 1.0f) { v.env = 1.0f; v.ph = ENV_DEC; }
                 break;
             case ENV_DEC:
-                v.env -= step(v.ad & 0x0F, false);
+                v.env -= step(v.ad & 0x0F, false) / fallScale(v.env);
                 if (v.env <= sustain) { v.env = sustain; v.ph = ENV_SUS; }
                 break;
             case ENV_SUS:
-                v.env = sustain;
+                // Outside attack the envelope only ever falls: lowering the
+                // sustain level mid-note drags the voice down to it at the
+                // decay rate, raising it does nothing until the gate opens
+                // again — exactly the chip's asymmetry.
+                if (v.env > sustain) {
+                    v.env -= step(v.ad & 0x0F, false) / fallScale(v.env);
+                    if (v.env < sustain) v.env = sustain;
+                }
                 break;
             case ENV_REL:
-                v.env -= step(v.sr & 0x0F, false);
+                v.env -= step(v.sr & 0x0F, false) / fallScale(v.env);
                 if (v.env < 0.0f) v.env = 0.0f;
                 break;
             }
@@ -165,12 +187,13 @@ void Sid::render(int16_t* out, int count) {
             if (v.env > 0.0005f) mix += (float(waveform(i)) - 2048.0f) * v.env;
         }
 
-        // Voices sync off the neighbour that just wrapped; done after all three
-        // have advanced so the order of the voices cannot matter.
+        // Hard sync: the slave resets once, on the exact sample its neighbour's
+        // MSB rises — not for a stretch of samples. Applied after all three
+        // voices advanced so their order cannot matter.
         for (int i = 0; i < VOICES; ++i)
             if (v_[i].ctrl & SYNC) {
                 const Voice& src = v_[(i + VOICES - 1) % VOICES];
-                if (src.lastMsb && !(src.phase & 0x400000)) v_[i].phase = 0;
+                if (src.msbRose) v_[i].phase = 0;
             }
 
         mix *= float(volume_) / 15.0f * 3.5f;    // headroom for three voices

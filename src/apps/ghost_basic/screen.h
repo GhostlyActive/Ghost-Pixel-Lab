@@ -19,6 +19,8 @@
 
 namespace apps::ghost {
 
+class Sprites;
+
 class Screen {
 public:
     static constexpr int COLS = 40;
@@ -76,6 +78,12 @@ public:
     // Paint the matrix into the surface. cursorOn toggles the reverse block at
     // the cursor cell so the caller can blink it.
     void render(board::gfx::Surface& s, bool cursorOn) const;
+
+    // Composite the eight sprites over the text, using the same origin, zoom
+    // and rotation as the characters so a sprite lands exactly where its VIC
+    // coordinates put it. Reads the shapes out of the 64K RAM it is handed.
+    void renderSprites(board::gfx::Surface& s, const Sprites& spr,
+                       const uint8_t* ram) const;
 
 private:
     int  index(int x, int y) const   { return y * COLS + x; }

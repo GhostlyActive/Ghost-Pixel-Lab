@@ -19,6 +19,11 @@ pio device monitor
 Open Ghost BASIC and just start typing — the characters land directly on the
 device's screen. `Ctrl+C` acts as RUN/STOP.
 
+Whole listings can be pasted into the monitor in one go: the input path
+buffers the burst (up to 8 KB) while the interpreter types it in, so nothing
+is lost mid-line. Lines longer than 80 characters are cut at the C64's
+logical-line limit, exactly as if typed by hand.
+
 ### Via a Bluetooth keyboard
 
 1. Open **BLE Scan** under *Others*.
@@ -265,6 +270,47 @@ Old listings from books and magazines therefore work the way they were meant to.
 > the unused top bits as ones (240 + colour), which would make
 > `POKE 53280,PEEK(53280)+1` useless for cycling colours.
 
+### Sprites
+
+The VIC-II's eight sprites live at 53248 upwards, at the original addresses. A
+sprite is a 24 × 21 movable image with its own colour, placed by writing its
+position, and switched on with one enable bit. The shape is 63 bytes in memory,
+and a pointer says where — exactly as on the original.
+
+| Address | Meaning |
+|---------|---------|
+| `53248 + 2*n` / `53249 + 2*n` | sprite *n* X and Y position |
+| `53264` | 9th X bit per sprite (X ≥ 256) |
+| `53269` | enable bits, one per sprite |
+| `53271` / `53277` | expand Y / expand X (double size), one bit per sprite |
+| `53276` | multicolour mode, one bit per sprite |
+| `53278` | sprite/sprite collision — reading it clears it |
+| `53285` / `53286` | the two shared multicolour colours |
+| `53287…53294` | colour of sprites 0…7 |
+| `2040…2047` | shape pointer per sprite: data sits at `pointer × 64` |
+
+Positions carry the chip's real offset: a sprite at X = 24, Y = 50 has its
+top-left pixel in the top-left corner of the text area. That is why listing
+coordinates land where they always did.
+
+```basic
+10 V=53248                        : REM the VIC base
+20 FOR I=0 TO 62:POKE 832+I,255:NEXT : REM a solid 24x21 block at 832
+30 POKE 2040,13                   : REM sprite 0 shape -> 13*64 = 832
+40 POKE V+39,1                    : REM sprite 0 colour: white
+50 POKE V+21,1                    : REM enable sprite 0
+60 X=24
+70 POKE V,X : POKE V+1,100        : REM move it across
+80 X=X+1 : IF X<255 THEN 70
+```
+
+Two enabled sprites whose pixels overlap set their bits in 53278; a game reads
+it (`IF PEEK(53278) AND 1 THEN…`) and the read clears it for the next frame.
+
+> Not modelled yet: **sprite/background priority** (53275) — sprites always draw
+> in front of the text — and **sprite/background collision** (53279), which
+> reads back as 0. Sprite/sprite collision is exact.
+
 ### Sound: the SID
 
 Three voices live at 54272 upwards, at the original addresses. `S=54272` and
@@ -297,6 +343,10 @@ Add `1` to open the gate and start the note, clear it to release.
 
 Ring modulation (`+4` on the control register) and oscillator sync (`+2`) work
 and read the neighbouring voice, so the metallic and hard-sync timbres come out.
+The envelope follows the chip's shape: attack is linear, decay and release run
+an exponential ladder (fast at the top, long dying tail), and outside attack
+the level only ever falls — lowering sustain mid-note pulls the voice down,
+raising it does nothing until the next gate.
 `PEEK(S+27)` returns the voice 3 oscillator, which listings use as a random
 source — set voice 3 to noise and read it.
 
@@ -497,8 +547,10 @@ While a program runs, `IN <line>` is appended. `STOP` interrupts, `CONT` resumes
 
 So you don't go looking for them — these original features are still missing:
 
-- **Sprites and bitmap modes.** Screen memory, colour RAM and the two colour
-  registers are mapped; the rest of the VIC-II is not.
+- **Bitmap (hi-res) modes.** Text screen, colour RAM, the two colour registers
+  and the eight **sprites** are mapped; the bitmap and multicolour bitmap modes
+  are not. Sprite/background priority and sprite/background collision are the
+  two sprite features still missing — see the sprite section above.
 - **The SID's filter** — see the note above.
 - **The lowercase character set** and the Shift+Commodore switch between the
   two sets. The graphics half is there: all 128 screen codes are drawn, and

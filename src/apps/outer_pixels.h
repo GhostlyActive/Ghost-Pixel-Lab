@@ -6,7 +6,11 @@
 // Controls (Xbox pad): left stick = steer, RT = thrust, LT = brake,
 // A = pick the planet under the crosshair (or launch when landed),
 // Y = toggle orbit lines, right stick = roll. Without a pad: drag to steer,
-// corners thrust/launch. The controller is searched for automatically.
+// corners thrust/launch — or type: arrow keys steer, Q/E roll, W/S thrust
+// and brake, A picks/launches, Y orbits, B leaves a surface. Keys arrive
+// from the serial console or a BLE keyboard; each press is a decaying
+// impulse, so holding a key (auto-repeat) flies smoothly. The controller
+// is searched for automatically.
 #pragma once
 
 #include "core/app.h"
@@ -38,6 +42,13 @@ private:
     bool  showOrbits_ = false;
     bool  prevA_ = false, prevY_ = false;
     float t_ = 0;                        // sim time (drives orbits)
+
+    // Keyboard fallback (serial console / BLE keyboard) while no pad is
+    // connected: a virtual stick fed by key impulses that decay, plus
+    // one-frame button events. See pollKeys() in the .cpp.
+    float kyaw_ = 0, kpitch_ = 0, kroll_ = 0, kthrust_ = 0;
+    bool  kA_ = false, kY_ = false, kB_ = false;
+    void  pollKeys(float dt);
 
     float starX_[80], starY_[80], starZ_[80];
     uint32_t rng_ = 0xBEEF77;

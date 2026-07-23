@@ -13,6 +13,7 @@
 #include "apps/ghost_basic/basic.h"
 #include "apps/ghost_basic/editor.h"
 #include "apps/ghost_basic/sid.h"
+#include "apps/ghost_basic/sprites.h"
 
 #include <cstdint>
 #include <string>
@@ -37,7 +38,8 @@ private:
     ghost::Screen screen_;
     ghost::Basic  basic_{screen_};
     ghost::Editor editor_{screen_};
-    ghost::Sid    sid_;
+    ghost::Sid     sid_;
+    ghost::Sprites sprites_;
     bool          audioOk_    = false;
     bool          speakerOn_  = false;
     std::string inputLine_;         // collects the line while BASIC waits on INPUT

@@ -58,6 +58,11 @@ apps::Disk          diskApp;
 }
 
 void setup() {
+    // A pasted BASIC listing arrives over USB-CDC as one burst, far faster
+    // than the frame loop drains it. The driver's default 256-byte RX buffer
+    // would lose the middle of it; 8 KB holds any realistic program. Must be
+    // set before begin().
+    Serial.setRxBufferSize(8192);
     Serial.begin(115200);
     delay(300);
     Serial.println("\n[boot] Ghost Pixel Lab");

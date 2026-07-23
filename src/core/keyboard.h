@@ -6,8 +6,10 @@
 // re-pairing. If nothing is stored yet, use the BLE Scan app: it drives the
 // discovery API below, and pairWith() remembers the chosen device.
 //
-// The ESP32-S3 is BLE-only, so this works with BLE keyboards (e.g. Keychron
-// K2 Pro in Bluetooth mode) — not with Bluetooth-Classic keyboards.
+// The ESP32-S3 is BLE-only, so this works with BLE keyboards. Boards that
+// pair over Bluetooth Classic can never appear here — the Keychron K2 Pro,
+// for example, is Classic-only and does not work, no matter what a phone's
+// Bluetooth list suggests.
 //
 // Apps drain decoded keys once per frame with next(). Keys are PETSCII-ish:
 // printable ASCII, RETURN (0x0D), DELETE (0x14), the cursor codes
@@ -19,6 +21,12 @@
 namespace core::keyboard {
 
 bool begin();                    // start BLE + connection task (idempotent)
+
+// Serial-console input only: sets up the key queue without starting the BLE
+// task, so an app can read typed keys while leaving the radio to someone
+// else (the Xbox pad, say). begin() implies this; both are idempotent.
+bool beginSerial();
+
 [[nodiscard]] bool connected();
 
 // Pop one decoded key from the buffer. Returns false when empty.

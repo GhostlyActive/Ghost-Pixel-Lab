@@ -401,17 +401,56 @@ void Basic::stFor() {
     forStack_.push_back(ForRec{varIdx, limit.num, step, lineIdx_, pos_});
 }
 
-void Basic::stNext() {
-    skipSpaces();
-    if (!atEnd() && std::isalpha((unsigned char)peek())) { uint8_t t; parseName(t); }
+bool Basic::nextOne(bool named, char n0, char n1) {
+    if (forStack_.empty()) { setError("NEXT WITHOUT FOR"); return false; }
 
-    if (forStack_.empty()) { setError("NEXT WITHOUT FOR"); return; }
-    ForRec& f = forStack_.back();
+    int idx = int(forStack_.size()) - 1;
+    if (named) {
+        // Find the loop this variable belongs to. A named NEXT that skips over
+        // inner loops abandons them, which is how a C64 program breaks out of a
+        // nested loop early — NEXT of an outer variable closes the inner ones.
+        while (idx >= 0) {
+            const Var& v = vars_[forStack_[idx].varIdx];
+            if (v.n0 == n0 && v.n1 == n1) break;
+            --idx;
+        }
+        if (idx < 0) { setError("NEXT WITHOUT FOR"); return false; }
+    }
+
+    ForRec f = forStack_[idx];
     Var& var = vars_[f.varIdx];
     var.val.num += f.step;
     const bool cont = f.step >= 0 ? var.val.num <= f.limit : var.val.num >= f.limit;
-    if (cont) { lineIdx_ = f.line; pos_ = f.pos; loadLine(); }
-    else      { forStack_.pop_back(); }
+    if (cont) {
+        forStack_.resize(idx + 1);   // drop any inner loops we jumped over
+        lineIdx_ = f.line; pos_ = f.pos; loadLine();
+        return true;
+    }
+    forStack_.resize(idx);           // this loop and anything inside it is done
+    return false;
+}
+
+void Basic::stNext() {
+    // A comma list closes several loops in one statement: NEXT J,I is exactly
+    // NEXT J : NEXT I. As soon as one of them iterates, control has jumped back
+    // into that loop and the rest of the list is not reached.
+    for (;;) {
+        skipSpaces();
+        bool named = false;
+        char n0 = ' ', n1 = ' ';
+        if (!atEnd() && std::isalpha((unsigned char)peek())) {
+            uint8_t t;
+            const std::string nm = parseName(t);
+            named = true;
+            n0 = nm.size() > 0 ? nm[0] : ' ';
+            n1 = nm.size() > 1 ? nm[1] : ' ';
+        }
+        if (nextOne(named, n0, n1)) return;   // iterated: back inside the loop
+        if (err_) return;
+        skipSpaces();
+        if (peek() == ',') { ++pos_; continue; }
+        return;
+    }
 }
 
 void Basic::stGoto() {
@@ -653,6 +692,7 @@ void Basic::stWait() {
 namespace {
 constexpr int SCREEN_RAM = 1024;    // $0400, 40x25 screen codes
 constexpr int COLOR_RAM  = 55296;   // $D800, one colour nibble per cell
+constexpr int VIC_SPRITE = 53248;   // $D000, sprite registers
 constexpr int VIC_BORDER = 53280;   // $D020
 constexpr int VIC_BG     = 53281;   // $D021
 constexpr int SID_BASE   = 54272;   // $D400, 29 registers
@@ -665,13 +705,15 @@ void Basic::pokeMem(int addr, uint8_t value) {
     } else if (addr >= COLOR_RAM && addr < COLOR_RAM + Screen::CELLS) {
         screen_.pokeColor(addr - COLOR_RAM, value);
     } else if (addr == VIC_BORDER) {
-        screen_.setBorder(value);
+        screen_.setBorder(value);          // $D020 sits inside the sprite range
     } else if (addr == VIC_BG) {
-        screen_.setBackground(value);
+        screen_.setBackground(value);      // $D021 too, so both are handled first
+    } else if (addr >= VIC_SPRITE && addr < VIC_SPRITE + Sprites::NUM_REGS) {
+        if (sprites_) sprites_->write(addr - VIC_SPRITE, value);
     } else if (addr >= SID_BASE && addr < SID_BASE + Sid::NUM_REGS) {
         if (sid_) sid_->write(addr - SID_BASE, value);
     } else if (ram_) {
-        ram_[addr] = value;
+        ram_[addr] = value;                // includes shape data + pointers at 2040
     }
 }
 
@@ -685,6 +727,10 @@ uint8_t Basic::peekMem(int addr) const {
     // 0..15 so POKE 53280,PEEK(53280)+1 cycles colours the obvious way.
     if (addr == VIC_BORDER) return screen_.border();
     if (addr == VIC_BG)     return screen_.background();
+    // Sprite registers read back what was written; the collision register at
+    // 53278 clears itself on read, which is how a game consumes a hit.
+    if (addr >= VIC_SPRITE && addr < VIC_SPRITE + Sprites::NUM_REGS)
+        return sprites_ ? sprites_->read(addr - VIC_SPRITE) : 0;
     // Only the two oscillator taps read back; the rest of the SID is
     // write-only and answers 0, exactly like the chip.
     if (addr >= SID_BASE && addr < SID_BASE + Sid::NUM_REGS)
