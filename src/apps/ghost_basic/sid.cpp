@@ -1,5 +1,7 @@
 #include "sid.h"
 
+#include <cmath>
+
 namespace apps::ghost {
 
 namespace {
@@ -36,6 +38,8 @@ void Sid::setSampleRate(int hz) { rate_ = hz > 0 ? hz : 16000; }
 void Sid::reset() {
     for (auto& v : v_) v = Voice{};
     volume_ = 0;
+    fcLo_ = fcHi_ = resFilt_ = modeVol_ = 0;
+    fIc1_ = fIc2_ = 0;
 }
 
 // Envelope increment per sample. Attack rises to full scale in ATTACK_MS;
@@ -73,7 +77,13 @@ void Sid::write(int reg, uint8_t value) {
         }
         return;
     }
-    if (reg == 24) volume_ = value & 0x0F;
+    switch (reg) {
+    case 21: fcLo_    = value & 0x07; break;   // $D415: cutoff low 3 bits
+    case 22: fcHi_    = value;        break;   // $D416: cutoff high 8 bits
+    case 23: resFilt_ = value;        break;   // $D417: resonance / routing
+    case 24: modeVol_ = value; volume_ = value & 0x0F; break;   // $D418
+    default: break;
+    }
 }
 
 uint8_t Sid::read(int reg) const {
@@ -135,8 +145,22 @@ int Sid::waveform(int i) {
 void Sid::render(int16_t* out, int count) {
     if (!out || count <= 0) return;
 
+    // State-variable filter coefficients (topology-preserving transform), from
+    // the registers as they stand for this block. The 11-bit cutoff maps to
+    // ~30 Hz..6 kHz; resonance follows the 6581's famously mild curve,
+    // Q = 0.707 at zero up to ~1.7 at fifteen.
+    const int   cut = (int(fcHi_) << 3) | fcLo_;
+    float fc = 30.0f + float(cut) * (6000.0f - 30.0f) / 2047.0f;
+    const float fcMax = float(rate_) * 0.45f;
+    if (fc > fcMax) fc = fcMax;
+    const float g  = std::tan(3.14159265f * fc / float(rate_));
+    const float k  = 1.0f / (0.707f + float(resFilt_ >> 4) * (1.0f / 15.0f));
+    const float a1 = 1.0f / (1.0f + g * (g + k));
+    const float a2 = g * a1;
+    const float a3 = g * a2;
+
     for (int n = 0; n < count; ++n) {
-        float mix = 0.0f;
+        float direct = 0.0f, filtIn = 0.0f;
 
         for (int i = 0; i < VOICES; ++i) {
             Voice& v = v_[i];
@@ -184,7 +208,17 @@ void Sid::render(int16_t* out, int count) {
                 break;
             }
 
-            if (v.env > 0.0005f) mix += (float(waveform(i)) - 2048.0f) * v.env;
+            if (v.env > 0.0005f) {
+                const float s = (float(waveform(i)) - 2048.0f) * v.env;
+                if (resFilt_ & (1 << i)) {
+                    filtIn += s;   // routed through the filter
+                } else if (i == 2 && (modeVol_ & 0x80)) {
+                    // $D418 bit 7 mutes an unfiltered voice 3 — the trick that
+                    // turns it into a silent LFO for PEEK(54299).
+                } else {
+                    direct += s;
+                }
+            }
         }
 
         // Hard sync: the slave resets once, on the exact sample its neighbour's
@@ -195,6 +229,20 @@ void Sid::render(int16_t* out, int count) {
                 const Voice& src = v_[(i + VOICES - 1) % VOICES];
                 if (src.msbRose) v_[i].phase = 0;
             }
+
+        // One step of the state-variable filter; low, band and high taps fall
+        // out of the same update, and $D418 picks which of them reach the mix.
+        // Nothing routed leaves the integrators idle at zero.
+        const float v3 = filtIn - fIc2_;
+        const float v1 = a1 * fIc1_ + a2 * v3;
+        const float v2 = fIc2_ + a2 * fIc1_ + a3 * v3;
+        fIc1_ = 2.0f * v1 - fIc1_;
+        fIc2_ = 2.0f * v2 - fIc2_;
+
+        float mix = direct;
+        if (modeVol_ & 0x10) mix += v2;                        // low-pass
+        if (modeVol_ & 0x20) mix += v1;                        // band-pass
+        if (modeVol_ & 0x40) mix += filtIn - k * v1 - v2;      // high-pass
 
         mix *= float(volume_) / 15.0f * 3.5f;    // headroom for three voices
         if (mix >  32000.0f) mix =  32000.0f;

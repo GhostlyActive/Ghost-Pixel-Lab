@@ -34,7 +34,7 @@ struct FakeFiles final : public Files {
 };
 static FakeFiles g_files;
 static Sid g_sid;
-static Sprites g_spr;
+static Vic g_spr;
 
 static int passN = 0, failN = 0;
 
@@ -154,7 +154,7 @@ static void checkProg(const char* name, const std::vector<std::string>& lines,
 int main() {
     basic.setFiles(&g_files);
     basic.setSid(&g_sid);
-    basic.setSprites(&g_spr);
+    basic.setVic(&g_spr);
 
     // --- arithmetic & precedence ---
     checkExpr("2+3*4", "14");
@@ -935,7 +935,7 @@ int main() {
         typeEnter("POKE 2041,13");                    // sprite 1 shares the shape
         typeEnter("POKE 53250,100:POKE 53251,100");   // and the position
         typeEnter("POKE 53269,3");                     // enable 0 and 1
-        g_spr.updateCollisions(basic.ram());
+        g_spr.updateCollisions(basic.ram(), scr.fgMask());
         const std::string hit = peek("53278"), again = peek("53278");
         if (hit == "3" && again == "0") ++passN;
         else { ++failN; std::printf("FAIL  sprite collision: [%s] then [%s], want [3] [0]\n",
@@ -945,13 +945,13 @@ int main() {
         setup();
         typeEnter("POKE 2041,13:POKE 53269,3");
         typeEnter("POKE 53250,140:POKE 53251,100");   // 40 px to the right
-        g_spr.updateCollisions(basic.ram());
+        g_spr.updateCollisions(basic.ram(), scr.fgMask());
         if (peek("53278") == "0") ++passN;
         else { ++failN; std::printf("FAIL  sprite: apart but still colliding\n"); }
 
         // X-expand doubles sprite 0 to 48 px wide, which now reaches sprite 1.
         typeEnter("POKE 53277,1");                     // expand sprite 0 in X
-        g_spr.updateCollisions(basic.ram());
+        g_spr.updateCollisions(basic.ram(), scr.fgMask());
         if (peek("53278") == "3") ++passN;
         else { ++failN; std::printf("FAIL  sprite: X-expand does not extend collision\n"); }
 
@@ -984,6 +984,246 @@ int main() {
         if (white == 504 && whiteOff == 0) ++passN;
         else { ++failN; std::printf("FAIL  sprite render: on=%d (want 504) off=%d (want 0)\n",
                                     white, whiteOff); }
+    }
+
+    // --- VIC-II graphics: charset, bitmap, priority, collisions ------------
+    {
+        static std::vector<uint16_t> buf(board::display::WIDTH * board::display::HEIGHT);
+        board::gfx::Surface surf{buf.data(), board::display::WIDTH, board::display::HEIGHT};
+        // Portrait 1:1 rendering: the 320x200 field starts at this pixel.
+        const int OX = (board::display::WIDTH - 320) / 2;
+        const int OY = (board::display::HEIGHT - 200) / 2;
+        auto pixel = [&](int x, int y) { return buf[(OY + y) * board::display::WIDTH + (OX + x)]; };
+        auto renderAll = [&]() {
+            scr.render(surf, false, &g_spr, basic.ram());
+            g_spr.updateCollisions(basic.ram(), scr.fgMask());
+            scr.renderSprites(surf, g_spr, basic.ram());
+        };
+        auto peek = [](int addr) {
+            scr.reset();
+            typeEnter("PRINT PEEK(" + std::to_string(addr) + ")");
+            char b[81]; scr.readLine(1, b, sizeof b); return trim(b);
+        };
+
+        // The character generator "ROM" is readable at 4096: the classic copy
+        // loop works without any bank-switching. The upper half is reversed.
+        checkProg("charset rom is readable at 4096",
+            {"10 PRINT PEEK(4096);PEEK(5120)"}, {"120  135"});
+
+        // With the default $D018 the ROM font draws: 'A' (code 1) puts its top
+        // glyph row into the foreground mask of cell (0,0).
+        basic.reset(); scr.reset(); g_spr.reset();
+        typeEnter("POKE 1024,1");
+        scr.render(surf, false, &g_spr, basic.ram());
+        if (scr.fgMask()[0] == 0x30) ++passN;
+        else { ++failN; std::printf("FAIL  charset: rom glyph mask %02X, want 30\n", scr.fgMask()[0]); }
+
+        // A custom set: point $D018 at 12288, poke a striped glyph for code 1,
+        // and the same cell now draws the poked shape instead of the ROM 'A'.
+        typeEnter("POKE 53272,(PEEK(53272)AND240)OR12");
+        typeEnter("FOR I=0 TO 7:POKE 12288+8+I,170:NEXT");
+        scr.render(surf, false, &g_spr, basic.ram());
+        bool striped = true;
+        for (int r = 0; r < 8; ++r) striped &= scr.fgMask()[r * 40] == 170;
+        if (striped) ++passN;
+        else { ++failN; std::printf("FAIL  charset: custom glyph not drawn from ram\n"); }
+
+        // Back to the ROM pointer: the poked set stays in RAM but stops showing.
+        typeEnter("POKE 53272,21");
+        scr.render(surf, false, &g_spr, basic.ram());
+        if (scr.fgMask()[0] == 0x30) ++passN;
+        else { ++failN; std::printf("FAIL  charset: rom pointer does not restore the font\n"); }
+
+        // DEN off blanks the display to the border; nothing is foreground.
+        typeEnter("POKE 53265,PEEK(53265)AND239");
+        scr.render(surf, false, &g_spr, basic.ram());
+        bool blank = pixel(4, 4) == buf[0];   // window pixel equals border pixel
+        for (int i = 0; i < 200 * 40; ++i) blank &= scr.fgMask()[i] == 0;
+        if (blank) ++passN;
+        else { ++failN; std::printf("FAIL  vic: DEN off does not blank the screen\n"); }
+        typeEnter("POKE 53265,PEEK(53265)OR16");
+
+        // Hi-res bitmap: the classic recipe — mode on, bitmap at 8192, plot
+        // X=100/Y=50 with the POKE formula, colours from the screen matrix.
+        basic.reset(); scr.reset(); g_spr.reset();
+        typeEnter("POKE 53265,PEEK(53265)OR32");
+        typeEnter("POKE 53272,PEEK(53272)OR8");
+        typeEnter("X=100:Y=50");
+        typeEnter("BY=8192+320*INT(Y/8)+8*INT(X/8)+(Y AND 7)");
+        typeEnter("POKE BY,PEEK(BY) OR 2^(7-(X AND 7))");
+        typeEnter("POKE 1024+40*INT(Y/8)+INT(X/8),16*1+6");   // white on blue
+        renderAll();
+        const bool maskOk = scr.fgMask()[50 * 40 + 12] == 0x08;
+        if (maskOk && pixel(100, 50) == PALETTE[1] && pixel(101, 50) == PALETTE[6]) ++passN;
+        else { ++failN; std::printf("FAIL  bitmap: plot mask %02X px %04X bg %04X\n",
+                                    scr.fgMask()[50 * 40 + 12], pixel(100, 50), pixel(101, 50)); }
+
+        // Multicolour bitmap: pairs %11 -> colour RAM, %01 -> colour-cell high
+        // nibble, %00 -> the background register; only %10/%11 are foreground.
+        typeEnter("POKE 53270,PEEK(53270)OR16");
+        typeEnter("POKE 53281,6");           // %00 pairs show this background
+        typeEnter("POKE 8192,196");          // pairs 11 00 01 00
+        typeEnter("POKE 1024,16*3+4");       // %01 -> cyan
+        typeEnter("POKE 55296,7");           // %11 -> yellow
+        renderAll();
+        if (pixel(0, 0) == PALETTE[7] && pixel(2, 0) == PALETTE[6] &&
+            pixel(4, 0) == PALETTE[3] && scr.fgMask()[0] == 0xC0) ++passN;
+        else { ++failN; std::printf("FAIL  mc bitmap: px %04X %04X %04X mask %02X\n",
+                                    pixel(0, 0), pixel(2, 0), pixel(4, 0), scr.fgMask()[0]); }
+
+        // Sprite behind the text ($D01B): its pixels lose against glyph
+        // foreground and win over background — and hitting that foreground
+        // sets the sprite/background latch at 53279, which clears on read.
+        basic.reset(); scr.reset(); g_spr.reset();
+        typeEnter("FOR I=0 TO 62:POKE 832+I,255:NEXT");
+        typeEnter("POKE 2040,13:POKE 53287,1");
+        typeEnter("POKE 53248,24:POKE 53249,50:POKE 53269,1");
+        typeEnter("POKE 53275,1");                     // sprite 0 behind
+        // The solid block goes in directly — typing a POKE would echo its own
+        // text into the very cells the check reads.
+        scr.reset(); scr.pokeScreen(0, 160); scr.pokeColor(0, 14);   // block at (0,0)
+        renderAll();
+        const bool behindOk = pixel(2, 2) == PALETTE[14] && pixel(10, 2) == PALETTE[1];
+        const std::string sb = peek(53279), sbAgain = peek(53279);
+        typeEnter("POKE 53275,0");
+        scr.reset(); scr.pokeScreen(0, 160); scr.pokeColor(0, 14);
+        renderAll();
+        const bool frontOk = pixel(2, 2) == PALETTE[1];
+        if (behindOk && frontOk && sb == "1" && sbAgain == "0") ++passN;
+        else { ++failN; std::printf("FAIL  sprite priority/sb: behind=%d front=%d sb=[%s][%s]\n",
+                                    int(behindOk), int(frontOk), sb.c_str(), sbAgain.c_str()); }
+
+        // Over empty background there is no hit. The front render above hit
+        // the block, so drain that latch before looking at the clean frame.
+        peek(53279);
+        typeEnter("POKE 53248,200");                   // move clear of the block
+        scr.reset();
+        renderAll();
+        if (peek(53279) == "0") ++passN;
+        else { ++failN; std::printf("FAIL  sprite/bg: hit reported over empty screen\n"); }
+
+        // Multicolour %01 looks solid but is background to the collision
+        // logic; %10 of the same shape collides.
+        typeEnter("POKE 53248,24:POKE 53276,1");
+        typeEnter("FOR I=0 TO 62:POKE 832+I,85:NEXT");    // all %01 pairs
+        scr.reset(); scr.pokeScreen(0, 160);              // fg under the sprite
+        renderAll();
+        const std::string mc01 = peek(53279);
+        typeEnter("FOR I=0 TO 62:POKE 832+I,170:NEXT");   // all %10 pairs
+        scr.reset(); scr.pokeScreen(0, 160); scr.pokeColor(0, 14);
+        renderAll();
+        const std::string mc10 = peek(53279);
+        if (mc01 == "0" && mc10 == "1") ++passN;
+        else { ++failN; std::printf("FAIL  mc collision rule: %%01=[%s] %%10=[%s], want 0 / 1\n",
+                                    mc01.c_str(), mc10.c_str()); }
+
+        // The raster register cannot sit still, or WAIT 53266 would hang.
+        if (peek(53266) != peek(53266)) ++passN;
+        else { ++failN; std::printf("FAIL  vic: raster register is frozen\n"); }
+    }
+
+    // --- SID filter ---------------------------------------------------------
+    {
+        std::vector<int16_t> fbuf(4000);
+        // One gated sawtooth on voice 1, rendered past the attack; the last
+        // half of the block is the settled level the checks compare.
+        auto peakWith = [&](std::initializer_list<std::pair<int, uint8_t>> regs) {
+            g_sid.reset(); g_sid.setSampleRate(16000);
+            g_sid.write(24, 15);
+            g_sid.write(0, 0x40); g_sid.write(1, 0x1F);   // ~470 Hz
+            g_sid.write(5, 0x00); g_sid.write(6, 0xF0);   // full sustain
+            for (auto& rv : regs) g_sid.write(rv.first, rv.second);
+            g_sid.write(4, 0x21);
+            g_sid.render(fbuf.data(), int(fbuf.size()));
+            long p = 0;
+            for (std::size_t i = fbuf.size() / 2; i < fbuf.size(); ++i)
+                p = std::max<long>(p, std::abs(long(fbuf[i])));
+            return p;
+        };
+
+        const long plain    = peakWith({});
+        const long lpOpen   = peakWith({{23, 1}, {21, 7}, {22, 255}, {24, 0x1F}});
+        const long lpClosed = peakWith({{23, 1}, {21, 0}, {22, 0},   {24, 0x1F}});
+        if (lpOpen > plain / 2 && lpClosed < plain / 4 && lpClosed < lpOpen / 3) ++passN;
+        else { ++failN; std::printf("FAIL  filter lp: plain=%ld open=%ld closed=%ld\n",
+                                    plain, lpOpen, lpClosed); }
+
+        // High-pass mirrors it: wide open (cutoff at the bottom) passes the
+        // tone, cutoff far above it strangles it.
+        // A sawtooth keeps real energy in its upper harmonics, so even a
+        // cutoff far above the fundamental leaves audible treble — the check
+        // is a clear drop, not silence.
+        const long hpLow  = peakWith({{23, 1}, {21, 0}, {22, 0},   {24, 0x4F}});
+        const long hpHigh = peakWith({{23, 1}, {21, 7}, {22, 255}, {24, 0x4F}});
+        if (hpLow > plain * 2 / 3 && hpHigh < hpLow / 2) ++passN;
+        else { ++failN; std::printf("FAIL  filter hp: plain=%ld low=%ld high=%ld\n",
+                                    plain, hpLow, hpHigh); }
+
+        // A voice routed into the filter with no mode selected disappears —
+        // and $D418 bit 7 mutes an unfiltered voice 3 outright.
+        const long routedNoMode = peakWith({{23, 1}});
+        g_sid.reset(); g_sid.setSampleRate(16000);
+        g_sid.write(24, 0x8F);                            // volume 15, voice 3 off
+        g_sid.write(14, 0x40); g_sid.write(15, 0x1F);
+        g_sid.write(19, 0x00); g_sid.write(20, 0xF0);
+        g_sid.write(18, 0x21);
+        g_sid.render(fbuf.data(), int(fbuf.size()));
+        long v3off = 0;
+        for (std::size_t i = fbuf.size() / 2; i < fbuf.size(); ++i)
+            v3off = std::max<long>(v3off, std::abs(long(fbuf[i])));
+        g_sid.write(24, 0x0F);                            // bit 7 back off
+        g_sid.render(fbuf.data(), int(fbuf.size()));
+        long v3on = 0;
+        for (std::size_t i = fbuf.size() / 2; i < fbuf.size(); ++i)
+            v3on = std::max<long>(v3on, std::abs(long(fbuf[i])));
+        if (routedNoMode == 0 && v3off == 0 && v3on > 1000) ++passN;
+        else { ++failN; std::printf("FAIL  filter routing: nomode=%ld v3off=%ld v3on=%ld\n",
+                                    routedNoMode, v3off, v3on); }
+    }
+
+    // The user's multiplication trainer, exactly as pasted — the length of
+    // line 50 once broke the serial path, so it stays here verbatim. RND is
+    // seeded deterministically: the first round asks 2*10, the second 5*6.
+    {
+        basic.reset(); scr.reset(); g_spr.reset();
+        const char* trainer[] = {
+            "10 A=INT(RND(1)*10)+1",
+            "20 B=INT(RND(1)*10)+1",
+            "30 PRINT A;\" * \";B;\" = \";",
+            "40 INPUT R",
+            "50 IF R=A*B THEN PRINT \"RICHTIG!\":GOTO 70",
+            "60 PRINT \"FALSCH. ERGEBNIS IST \";A*B",
+            "70 GOTO 10",
+        };
+        for (const char* l : trainer) typeEnter(l);
+        g_in.assign({"20", "0"});                     // right, then wrong
+        for (char c : std::string("RUN")) feed((uint8_t)c);
+        feed(0x0D);
+        int guard = 0;
+        while (basic.busy() && guard++ < 100000) {
+            if (basic.mode() == Basic::Mode::Input) {
+                if (g_in.empty()) break;              // both answers given
+                std::string r = g_in.front(); g_in.pop_front();
+                for (char c : r) scr.put((uint8_t)c);
+                scr.put(0x0D);
+                basic.provideInput(r.c_str());
+            }
+            basic.poll();
+        }
+        // Leave the endless loop cleanly: answer the pending INPUT once more,
+        // then break out of Running — poll only honours the break flag there.
+        if (basic.mode() == Basic::Mode::Input) basic.provideInput("0");
+        basic.breakRun();
+        basic.poll();
+        std::string all;
+        for (int r = 0; r < Screen::ROWS; ++r) {
+            char b[81]; scr.readLine(r, b, sizeof b);
+            all += b; all += '\n';
+        }
+        if (all.find("RICHTIG!") != std::string::npos &&
+            all.find("FALSCH. ERGEBNIS IST  30") != std::string::npos &&
+            all.find("?SYNTAX") == std::string::npos) ++passN;
+        else { ++failN; std::printf("FAIL  trainer: screen was\n%s\n", all.c_str()); }
     }
 
     // --- file I/O: OPEN / CLOSE / PRINT# / INPUT# / GET# / CMD ------------

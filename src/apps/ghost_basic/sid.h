@@ -6,9 +6,13 @@
 // of samples out of render() and hands them to the speaker, which keeps this
 // file testable on a PC like the rest of the interpreter.
 //
-// Not modelled: the analogue filter. Its cutoff varied so much between chips
-// that no two C64s sounded alike, and leaving it out costs far less character
-// than a bad approximation would.
+// The analogue filter is a digital state-variable stage: per-voice routing,
+// low/band/high-pass select, 11-bit cutoff and the resonance register all
+// behave as on the chip, including the bit that mutes voice 3 so it can serve
+// as a silent LFO. One honest caveat: the real 6581's cutoff curve varied so
+// much between chips that no two C64s sounded alike — the mapping here
+// (roughly 30 Hz to 6 kHz, resonance mild like the original) is one plausible
+// chip, not every chip.
 #pragma once
 
 #include <cstdint>
@@ -57,6 +61,13 @@ private:
     Voice   v_[VOICES];
     uint8_t volume_ = 0;
     int     rate_   = 16000;
+
+    // Filter registers ($D415..$D418) and the state-variable integrators.
+    uint8_t fcLo_    = 0;      // cutoff bits 0..2
+    uint8_t fcHi_    = 0;      // cutoff bits 3..10
+    uint8_t resFilt_ = 0;      // resonance (high nibble) / routing (low)
+    uint8_t modeVol_ = 0;      // LP/BP/HP select, voice-3-off, volume
+    float   fIc1_ = 0, fIc2_ = 0;
 };
 
 } // namespace apps::ghost

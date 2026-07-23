@@ -40,7 +40,27 @@ Basic::~Basic() { std::free(ram_); }
 
 void Basic::reset() {
     lines_.clear();
+    // Power-on wipes the 64K; RUN, NEW and CLR do not (clearVars). A shape or
+    // charset poked into memory survives them, exactly as on the original.
+    if (ram_) {
+        std::memset(ram_, 0, 65536);
+        // The character generator "ROM": the VIC fetches the built-in font at
+        // $1000, and here the CPU can read it there too — so the classic copy
+        // loop needs no bank-switching dance, a plain
+        //   FOR I=0 TO 2047:POKE 12288+I,PEEK(4096+I):NEXT
+        // brings the font into RAM. The upper half is the reversed set, as in
+        // the original ROM.
+        for (int c = 0; c < 128; ++c)
+            for (int r = 0; r < 8; ++r) {
+                ram_[0x1000 + c * 8 + r]         = petscii::FONT[c][r];
+                ram_[0x1000 + (128 + c) * 8 + r] = uint8_t(~petscii::FONT[c][r]);
+            }
+    }
     clearVars();
+    // Power-on re-seeds RND: the original famously produces the same RND(1)
+    // sequence after every reset, and listings leaned on that for repeatable
+    // "random" levels.
+    rngState_ = 0x1234567u;
     mode_ = Mode::Idle;
     contOk_ = false;
 }
@@ -56,7 +76,6 @@ void Basic::clearVars() {
     if (sid_) sid_->reset();
     printTo_ = -1; cmdLf_ = -1; st_ = 0;
     restoreData();
-    if (ram_) std::memset(ram_, 0, 65536);
 }
 
 int Basic::findLine(int num) const {
@@ -692,7 +711,7 @@ void Basic::stWait() {
 namespace {
 constexpr int SCREEN_RAM = 1024;    // $0400, 40x25 screen codes
 constexpr int COLOR_RAM  = 55296;   // $D800, one colour nibble per cell
-constexpr int VIC_SPRITE = 53248;   // $D000, sprite registers
+constexpr int VIC_BASE   = 53248;   // $D000, the VIC-II register file
 constexpr int VIC_BORDER = 53280;   // $D020
 constexpr int VIC_BG     = 53281;   // $D021
 constexpr int SID_BASE   = 54272;   // $D400, 29 registers
@@ -708,8 +727,8 @@ void Basic::pokeMem(int addr, uint8_t value) {
         screen_.setBorder(value);          // $D020 sits inside the sprite range
     } else if (addr == VIC_BG) {
         screen_.setBackground(value);      // $D021 too, so both are handled first
-    } else if (addr >= VIC_SPRITE && addr < VIC_SPRITE + Sprites::NUM_REGS) {
-        if (sprites_) sprites_->write(addr - VIC_SPRITE, value);
+    } else if (addr >= VIC_BASE && addr < VIC_BASE + Vic::NUM_REGS) {
+        if (vic_) vic_->write(addr - VIC_BASE, value);
     } else if (addr >= SID_BASE && addr < SID_BASE + Sid::NUM_REGS) {
         if (sid_) sid_->write(addr - SID_BASE, value);
     } else if (ram_) {
@@ -729,8 +748,8 @@ uint8_t Basic::peekMem(int addr) const {
     if (addr == VIC_BG)     return screen_.background();
     // Sprite registers read back what was written; the collision register at
     // 53278 clears itself on read, which is how a game consumes a hit.
-    if (addr >= VIC_SPRITE && addr < VIC_SPRITE + Sprites::NUM_REGS)
-        return sprites_ ? sprites_->read(addr - VIC_SPRITE) : 0;
+    if (addr >= VIC_BASE && addr < VIC_BASE + Vic::NUM_REGS)
+        return vic_ ? vic_->read(addr - VIC_BASE) : 0;
     // Only the two oscillator taps read back; the rest of the SID is
     // write-only and answers 0, exactly like the chip.
     if (addr >= SID_BASE && addr < SID_BASE + Sid::NUM_REGS)

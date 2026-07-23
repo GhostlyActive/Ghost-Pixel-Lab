@@ -101,8 +101,8 @@ void GhostBasic::onEnter() {
     sid_.setSampleRate(SAMPLE_RATE);
     sid_.reset();
     basic_.setSid(&sid_);
-    sprites_.reset();
-    basic_.setSprites(&sprites_);
+    vic_.reset();
+    basic_.setVic(&vic_);
     inputLine_.clear();
 
     // Boot banner with this machine's real memory figures.
@@ -128,7 +128,7 @@ void GhostBasic::onExit() {
     board::audio::setSpeakerEnable(false);
     speakerOn_ = false;
     sid_.reset();
-    sprites_.reset();
+    vic_.reset();
 }
 
 void GhostBasic::routeKey(uint8_t k) {
@@ -170,10 +170,6 @@ void GhostBasic::update(const core::Input& in, float dt) {
 
     basic_.poll();
 
-    // Detect sprite hits once per frame so a program that PEEKs 53278 reads the
-    // collisions from the frame it just drew.
-    if (sprites_.active()) sprites_.updateCollisions(basic_.ram());
-
     // Feed the speaker only while a voice is sounding: silence costs nothing
     // and the amplifier stays off, so an idle machine is genuinely quiet.
     if (audioOk_) {
@@ -200,8 +196,13 @@ void GhostBasic::update(const core::Input& in, float dt) {
 }
 
 void GhostBasic::render(board::gfx::Surface& s) {
-    screen_.render(s, cursorOn_);
-    if (sprites_.active()) screen_.renderSprites(s, sprites_, basic_.ram());
+    screen_.render(s, cursorOn_, &vic_, basic_.ram());
+    if (vic_.active()) {
+        // Collisions latch off the frame just drawn — its foreground mask is
+        // fresh — so a PEEK of 53278/53279 reads what is on the glass now.
+        vic_.updateCollisions(basic_.ram(), screen_.fgMask());
+        screen_.renderSprites(s, vic_, basic_.ram());
+    }
 }
 
 } // namespace apps

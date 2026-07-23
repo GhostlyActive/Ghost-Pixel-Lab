@@ -18,7 +18,7 @@ g++ -std=gnu++17 -Wall -Wextra -Wshadow \
     "$src/apps/ghost_basic/basic_expr.cpp" \
     "$src/apps/ghost_basic/basic_io.cpp" \
     "$src/apps/ghost_basic/sid.cpp" \
-    "$src/apps/ghost_basic/sprites.cpp" \
+    "$src/apps/ghost_basic/vic.cpp" \
     "$src/apps/ghost_basic/editor.cpp" \
     "$here/suite.cpp" \
     -o "$out/suite"

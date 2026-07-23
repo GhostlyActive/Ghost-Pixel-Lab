@@ -238,10 +238,18 @@ Arrays used without `DIM` are created automatically with 0..10 per dimension.
 | Address | Meaning |
 |---------|---------|
 | `1024`–`2023` | Screen memory, one **screen code** per cell (40 × 25) |
+| `2040`–`2047` | Sprite shape pointers (see the sprite section) |
+| `4096`–`6143` | The character generator "ROM", readable (see charsets) |
 | `55296`–`56295` | Colour RAM, one colour 0–15 per cell |
+| `53248`–`53294` | The VIC-II: sprites, modes, memory pointers |
 | `53280` | Border colour |
 | `53281` | Background colour |
+| `54272`–`54300` | The SID |
 | everything else | Ordinary 64 KB of RAM |
+
+RAM is wiped by switching the machine on, **not** by RUN, NEW or CLR — a
+sprite shape or charset you poke into memory stays there for the next program,
+exactly as on the original.
 
 The cell in row *r*, column *c* sits at `1024 + 40*r + c`, its colour at
 `55296 + 40*r + c`. Screen codes are **not** ASCII: 1 = `A`, 2 = `B` … 26 = `Z`,
@@ -306,10 +314,58 @@ coordinates land where they always did.
 
 Two enabled sprites whose pixels overlap set their bits in 53278; a game reads
 it (`IF PEEK(53278) AND 1 THEN…`) and the read clears it for the next frame.
+53279 is the same latch against the *background*: any sprite pixel on top of a
+set glyph or bitmap pixel names its sprite there, and the read clears it. A
+sprite whose bit is set in 53275 slips **behind** the text instead of covering
+it — the classic way to walk a figure behind scenery. As on the chip, the %01
+pair of a multicolour sprite is drawn but counts as background, so it neither
+collides nor covers.
 
-> Not modelled yet: **sprite/background priority** (53275) — sprites always draw
-> in front of the text — and **sprite/background collision** (53279), which
-> reads back as 0. Sprite/sprite collision is exact.
+### A character set of your own
+
+53272 ($D018) points the VIC at its character set. The built-in font sits at
+4096 — and unlike the original, it is *readable* there, so copying it into RAM
+needs none of the bank-switching dance from the old listings:
+
+```basic
+10 FOR I=0 TO 2047:POKE 12288+I,PEEK(4096+I):NEXT
+20 POKE 53272,(PEEK(53272)AND240)OR12  : REM charset now at 12288
+30 FOR I=0 TO 7:POKE 12288+8+I,255-PEEK(12288+8+I):NEXT : REM invert the 'A'
+```
+
+Each glyph is eight bytes, top to bottom, bit 7 leftmost; code × 8 indexes it.
+Codes 128…255 are the second half of the set (the ROM keeps the reversed
+glyphs there, which is all reverse video is). `POKE 53272,21` points back at
+the built-in font; a poked set survives RUN and NEW, like any RAM.
+
+### Hi-res graphics: the bitmap
+
+Bit 5 of 53265 switches the VIC to the 320×200 bitmap; bit 3 of 53272 puts the
+bitmap at 8192. Colours come per 8×8 cell from the text screen: the high
+nibble is the ink, the low nibble the paper.
+
+```basic
+10 POKE 53265,PEEK(53265)OR32     : REM bitmap mode on
+20 POKE 53272,PEEK(53272)OR8      : REM bitmap at 8192
+30 FOR I=0 TO 999:POKE 1024+I,16*1+6:NEXT : REM white on blue everywhere
+40 FOR I=8192 TO 16191:POKE I,0:NEXT      : REM clear the bitmap
+50 FOR X=0 TO 319
+60   Y=100+INT(40*SIN(X/20))
+70   BY=8192+320*INT(Y/8)+8*INT(X/8)+(Y AND 7)
+80   POKE BY,PEEK(BY) OR 2^(7-(X AND 7))
+90 NEXT
+100 GOTO 100
+```
+
+Line 70/80 is the classic plot formula, unchanged from the handbooks. With
+bit 4 of 53270 set on top, the bitmap turns multicolour: 160×200 fat pixels,
+each a two-bit pair — %01 and %10 from the colour cell's nibbles, %11 from
+colour RAM, %00 the background register. Text mode has the same multicolour
+trick: colour-RAM values 8…15 switch a cell to pairs drawn from 53282/53283
+and the cell colour. `POKE 53265,PEEK(53265)AND239` blanks the whole display
+to the border colour (bit 4 is the display-enable); the raster register 53266
+returns a moving value so `WAIT 53266,…` terminates, but there is no real beam
+behind it.
 
 ### Sound: the SID
 
@@ -350,9 +406,33 @@ raising it does nothing until the next gate.
 `PEEK(S+27)` returns the voice 3 oscillator, which listings use as a random
 source — set voice 3 to noise and read it.
 
-> The analogue filter is not modelled. Its cutoff varied so wildly between chips
-> that no two C64s sounded the same, and a poor imitation would cost more
-> character than leaving it out.
+The filter works the way the listings drive it:
+
+| Offset | Register |
+|--------|----------|
+| `S+21` | cutoff, low 3 bits |
+| `S+22` | cutoff, high 8 bits |
+| `S+23` | resonance (high nibble) + routing: bits 0–2 send voices 1–3 in |
+| `S+24` | low nibble volume; `+16` low-pass, `+32` band-pass, `+64` high-pass, `+128` mutes an unfiltered voice 3 |
+
+```basic
+10 S=54272
+20 POKE S+24,15+16         : REM volume, low-pass on
+30 POKE S+23,1             : REM voice 1 through the filter
+40 POKE S+5,9 : POKE S+6,240
+50 POKE S+1,25 : POKE S,177 : POKE S+4,33
+60 FOR C=0 TO 255 : POKE S+22,C : NEXT : REM sweep the cutoff open
+70 POKE S+4,32
+```
+
+A voice routed in with no mode bit set disappears from the mix, and `+128`
+silences voice 3 while `PEEK(S+27)` keeps ticking — the silent-LFO trick, both
+exactly as on the chip.
+
+> One honest caveat: the real 6581's cutoff curve varied so wildly between
+> chips that no two C64s sounded the same. The mapping here (about 30 Hz to
+> 6 kHz, resonance as mild as the original's) is *one* plausible chip, not
+> every chip.
 
 ### Built-in functions
 
@@ -547,15 +627,20 @@ While a program runs, `IN <line>` is appended. `STOP` interrupts, `CONT` resumes
 
 So you don't go looking for them — these original features are still missing:
 
-- **Bitmap (hi-res) modes.** Text screen, colour RAM, the two colour registers
-  and the eight **sprites** are mapped; the bitmap and multicolour bitmap modes
-  are not. Sprite/background priority and sprite/background collision are the
-  two sprite features still missing — see the sprite section above.
-- **The SID's filter** — see the note above.
+- **Raster tricks and interrupts.** The raster register moves so WAIT loops
+  terminate, but there is no beam and no IRQ — split-screen and border-opening
+  effects need machine code anyway, and there is none here by choice.
+- **Smooth scrolling and ECM.** The low bits of 53265/53270 (pixel scroll,
+  38-column/24-row mode, extended colour mode) are stored but not drawn.
+- **VIC banking.** The VIC always sees bank 0 (0–16383); 56576 ($DD00) is
+  plain RAM. Screen, charsets, bitmap and sprite shapes all fit there, which
+  is where the listings put them anyway.
 - **The lowercase character set** and the Shift+Commodore switch between the
   two sets. The graphics half is there: all 128 screen codes are drawn, and
   bit 7 gives reverse video, so `POKE 1024,81+128` prints a reversed circle.
+  (A custom charset at 6144 would be the way to build one yourself.)
 - `SYS` and `USR` — they call machine code, and there is no 6502 here by choice.
 
-The core for writing small applications — maths, text, branching, loops, I/O,
-arrays, data, subroutines, custom functions and poking the screen — is complete.
+The language is complete, and so is the machine a listing reaches through
+POKE: screen, colour RAM, sprites with priority and both collisions, custom
+character sets, the two bitmap modes, and the SID with its filter.

@@ -19,7 +19,7 @@
 
 namespace apps::ghost {
 
-class Sprites;
+class Vic;
 
 class Screen {
 public:
@@ -75,24 +75,42 @@ public:
     // Returns the index of the line's last physical row (for cursor placement).
     int readLogicalLine(int row, char* out, int outSize) const;
 
-    // Paint the matrix into the surface. cursorOn toggles the reverse block at
-    // the cursor cell so the caller can blink it.
-    void render(board::gfx::Surface& s, bool cursorOn) const;
+    // Paint the machine's picture into the surface. cursorOn toggles the
+    // reverse block at the cursor cell so the caller can blink it. With a Vic
+    // and the 64K RAM the display honours the chip's mode bits — custom
+    // character sets, the two bitmap modes, multicolour text, DEN — and fills
+    // the foreground mask as it goes; without them it is the plain text matrix
+    // (which is what the interpreter tests use).
+    void render(board::gfx::Surface& s, bool cursorOn,
+                const Vic* vic = nullptr, const uint8_t* ram = nullptr) const;
 
-    // Composite the eight sprites over the text, using the same origin, zoom
-    // and rotation as the characters so a sprite lands exactly where its VIC
-    // coordinates put it. Reads the shapes out of the 64K RAM it is handed.
-    void renderSprites(board::gfx::Surface& s, const Sprites& spr,
+    // Composite the eight sprites over the graphics, using the same origin,
+    // zoom and rotation as the characters so a sprite lands exactly where its
+    // VIC coordinates put it. Honours the behind-the-text bit against the
+    // foreground mask of the frame render() just produced.
+    void renderSprites(board::gfx::Surface& s, const Vic& vic,
                        const uint8_t* ram) const;
+
+    // The frame's foreground pixels, 40 bytes per line of the 320x200 field
+    // (bit 0x80 = leftmost). This is what the VIC calls "foreground" for
+    // priority and collisions: set glyph bits, bitmap 1-bits, and the %10/%11
+    // pairs of the multicolour modes. Filled by render().
+    const uint8_t* fgMask() const { return fgmask_; }
 
 private:
     int  index(int x, int y) const   { return y * COLS + x; }
     void scrollUp();
     void drawCell(board::gfx::Surface& s, int col, int row,
-                  uint8_t code, uint8_t color, bool reverse) const;
+                  uint8_t code, uint8_t color, bool cursor,
+                  const Vic* vic, const uint8_t* ram) const;
+    void drawBitmap(board::gfx::Surface& s, const Vic& vic,
+                    const uint8_t* ram) const;
 
     uint8_t code_[ROWS * COLS] = {};   // screen codes (bit 7 = reverse video)
     uint8_t color_[ROWS * COLS] = {};  // colour RAM, 0..15
+    // Foreground mask of the last rendered frame (see fgMask). Mutable because
+    // it is a render product, not screen state.
+    mutable uint8_t fgmask_[PIXH * COLS] = {};
     bool    cont_[ROWS] = {};          // row continues the logical line above it
     int     cx_ = 0, cy_ = 0;          // cursor cell
     bool    reverse_ = false;          // RVS mode, cleared by RETURN like the original
