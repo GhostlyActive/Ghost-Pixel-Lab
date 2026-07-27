@@ -19,7 +19,8 @@
 
 Pocket AMOLED playground for the Waveshare ESP32-S3-Touch-AMOLED-1.8: a tiny
 app engine (touch launcher, double-buffered DMA renderer, sound mixer with
-MP3, storage, Wi-Fi/BLE) plus a growing pile of experiments. Modern C++.
+MP3, storage, Wi-Fi/BLE), a Commodore-64-style machine you program in BASIC,
+plus a growing pile of experiments. Modern C++.
 
 ## Hardware
 
@@ -77,25 +78,33 @@ background so it's seamless.
 Requires [PlatformIO](https://platformio.org/).
 
 ```sh
-pio run -t upload      # build + flash
-pio run -t uploadfs    # flash the data/ folder (assets, mp3s)
-pio device monitor     # serial @ 115200 — doubles as Ghost BASIC's keyboard
-./test/c64/run.sh      # run the BASIC interpreter suite on the host
+pio run -t upload           # build + flash
+pio run -t uploadfs         # flash the data/ folder (assets, mp3s)
+pio device monitor          # serial @ 115200 — doubles as Ghost BASIC's keyboard
+./test/ghost_basic/run.sh   # BASIC, screen, VIC-II and SID, on the host
+./test/outer_pixels/run.sh  # orbits, flight model and terrain, on the host
 ```
 
 ## Layout
 
 ```
 src/
-  main.cpp      # composition root: board init + app registration
-  core/         # engine: App interface, manager, menu, files, keyboard, sound
-  apps/         # one file pair per experiment
-    c64/        # Ghost BASIC internals: screen, editor, BASIC, font
-  board/        # hardware modules (display, imu, touch, audio, storage, ...)
-data/           # assets packed into LittleFS
-docs/           # developer guide + Ghost BASIC manual
-test/c64/       # host-side interpreter suite (no hardware needed)
+  main.cpp          # composition root: board init + app registration
+  core/             # engine: App interface, manager, menu, files, keyboard, sound
+  apps/             # one file pair per experiment
+    ghost_basic/    # the machine: screen, editor, BASIC, font, VIC-II, SID
+    outer_pixels/   # bodies, ship, terrain, both renderers
+  board/            # hardware modules (display, imu, touch, audio, storage, ...)
+data/               # assets packed into LittleFS
+docs/               # developer guide + Ghost BASIC manual
+test/               # host-side suites (no hardware needed) + shared stubs
 ```
+
+The bigger apps keep their internals in a folder beside the shell, and those
+folders depend on nothing from `core::` — only on `board::gfx::Surface`. A
+handful of stubs in `test/hostshim/` stand in for it, so the interpreter, the
+orbits, the flight model and the renderers all build and run on a PC in about
+a second.
 
 Files live under `/GHOST` on the SD card, or on internal flash when no card is
 present — `core::files` picks one and every app shares the layout:

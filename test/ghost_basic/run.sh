@@ -12,7 +12,7 @@ out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 
 g++ -std=gnu++17 -Wall -Wextra -Wshadow \
-    -I "$here/hostshim" -I "$src" \
+    -I "$here/../hostshim" -I "$src" \
     "$src/apps/ghost_basic/screen.cpp" \
     "$src/apps/ghost_basic/basic.cpp" \
     "$src/apps/ghost_basic/basic_expr.cpp" \

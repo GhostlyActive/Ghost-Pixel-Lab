@@ -1,7 +1,13 @@
 // Outer Pixels: a small space-flight sim. Planets orbit the sun; fly with the
-// gamepad, drift onto a surface to land, and launch again. Atmosphere tints
-// the sky and stars on descent; reentry heat glows at speed. No engine — all
-// the simulation and rendering lives in this app.
+// gamepad, drift onto a surface to land, and launch again. Atmosphere tints the
+// sky and stars on descent; reentry heat glows at speed. Drop low enough over a
+// planet and the view becomes a voxel landscape you fly through.
+//
+// This file is the core::App shell only: it owns the pieces in
+// src/apps/outer_pixels/, folds whichever input device is present into one
+// Controls struct, and drives the terrain generator. Everything else — orbits,
+// flight model, both renderers — lives in that folder and depends on nothing
+// from core::, so it compiles and is tested on a PC.
 //
 // Controls (Xbox pad): left stick = steer, RT = thrust, LT = brake,
 // A = pick the planet under the crosshair (or launch when landed),
@@ -14,7 +20,11 @@
 #pragma once
 
 #include "core/app.h"
-#include "core/pad.h"
+#include "apps/outer_pixels/ship.h"
+#include "apps/outer_pixels/terrain.h"
+#include "apps/outer_pixels/space_view.h"
+#include "apps/outer_pixels/surface_view.h"
+
 #include <cstdint>
 
 namespace apps {
@@ -30,58 +40,42 @@ public:
     void render(board::gfx::Surface& s) override;
 
 private:
-    float px_ = 0, py_ = 0, pz_ = 0;     // ship position
-    float vx_ = 0, vy_ = 0, vz_ = 0;     // ship velocity
-    // Orientation as an orthonormal body frame (true 6DOF: forward/right/up).
-    float fwd_[3]   = {0, 0, 1};
-    float right_[3] = {1, 0, 0};
-    float up_[3]    = {0, 1, 0};
-    int   landed_ = -1;                  // planet index, or -1 while flying
-    float landOX_ = 0, landOY_ = 0, landOZ_ = 0;  // surface offset while landed
-    int   selected_ = -1;                // navigation target (A picks it)
-    bool  showOrbits_ = false;
-    bool  prevA_ = false, prevY_ = false;
-    float t_ = 0;                        // sim time (drives orbits)
+    outer::Ship        ship_;
+    outer::Terrain     terrain_;
+    outer::SpaceView   space_;
+    outer::SurfaceView surface_;
 
-    // Keyboard fallback (serial console / BLE keyboard) while no pad is
-    // connected: a virtual stick fed by key impulses that decay, plus
-    // one-frame button events. See pollKeys() in the .cpp.
+    float t_ = 0;                       // simulation time, drives the orbits
+    int   flyingOver_ = -1;             // body index in surface mode, -1 = space
+    bool  showOrbits_ = false;
+
+    // Build the Controls for this frame out of pad, touch and keyboard.
+    outer::Controls readInput(const core::Input& in, bool surfaceMode);
+    bool  prevA_ = false, prevY_ = false;
+
+    // Keyboard fallback while no pad is connected: key presses become impulses
+    // on a virtual stick that decay over a fraction of a second, because a
+    // serial console never reports key releases — only presses.
     float kyaw_ = 0, kpitch_ = 0, kroll_ = 0, kthrust_ = 0;
     bool  kA_ = false, kY_ = false, kB_ = false;
     void  pollKeys(float dt);
 
-    float starX_[80], starY_[80], starZ_[80];
-    uint32_t rng_ = 0xBEEF77;
-    uint32_t rnd() { rng_ ^= rng_ << 13; rng_ ^= rng_ >> 17; rng_ ^= rng_ << 5; return rng_; }
+    // Terrain buffers live in PSRAM and outlive a visit to the app, so coming
+    // back to the same planet needs no rebuild.
+    uint8_t*  heights_ = nullptr;
+    uint16_t* colors_  = nullptr;
 
-    // --- surface (voxel heightmap) mode ---
-    // When you drop low over a planet the view switches to a Comanche-style
-    // voxel terrain you fly through (procedural mountains). All of it lives in
-    // this app, grouped in one clearly marked section of outer_pixels.cpp.
-    int       surface_ = -1;            // planet index in surface mode, -1 = space
-    float     sx_ = 0, sy_ = 0;         // voxel camera position on the terrain
-    float     salt_ = 0;                // altitude above the terrain plane
-    float     syaw_ = 0, spitch_ = 0;   // heading / nose angle
-    uint8_t*  hmap_ = nullptr;          // procedural heightmap tile (PSRAM)
-    uint16_t* cmap_ = nullptr;          // matching color tile (PSRAM)
+    // The tile is built on a background task while you descend, so entering
+    // surface mode never hitches. reqPlanet_ is the request, Terrain::held()
+    // the answer.
+    volatile int reqPlanet_ = -1;
+    void*        genTask_   = nullptr;
+    void         genLoop();
+    static void  genTaskTramp(void* self);
 
-    // The terrain tile is built in the background while you approach (so the
-    // switch to surface mode is instant) and cached per planet.
-    volatile int reqPlanet_  = -1;      // planet the gen task should build
-    volatile int donePlanet_ = -1;      // planet currently held in hmap_/cmap_
-    void*        genTask_     = nullptr;
-
-    void enterSurface(int planet);
-    void exitSurface();
-    void updateSurface(const core::Input& in, float dt);
-    void renderSurface(board::gfx::Surface& s);
-    void genLoop();                     // background terrain-generation loop
-    static void genTaskTramp(void* self);
-
-    // Cloud-dive transition (space <-> surface).
-    int   dive_  = 0;                   // 1 = transition running
-    float diveT_ = 0;
-    void drawClouds(board::gfx::Surface& s, uint16_t sky);
+    // Cloud punch-through between the two views.
+    bool  diving_ = false;
+    float diveT_  = 0;
 };
 
 } // namespace apps
