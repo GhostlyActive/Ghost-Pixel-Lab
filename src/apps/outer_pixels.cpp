@@ -22,6 +22,8 @@ constexpr int H = board::display::HEIGHT;
 // Altitudes, in world units above a planet's surface.
 constexpr float SURFACE_ENTER = 16.0f;   // drop below this and the view switches
 constexpr float SURFACE_PREP  = 90.0f;   // start building the terrain here
+
+constexpr float TOUCH_RAMP_S = 1.0f;     // finger held this long = full thrust
 }
 
 void Outer_Pixels::onEnter() {
@@ -31,6 +33,7 @@ void Outer_Pixels::onEnter() {
     kyaw_ = kpitch_ = kroll_ = kthrust_ = 0;
     kA_ = kY_ = kB_ = false;
     prevA_ = prevY_ = false;
+    touchThrust_ = 0; touchThrottle_ = false;
 
     t_ = 0;
     outer::update(t_);
@@ -99,8 +102,10 @@ void Outer_Pixels::pollKeys(float dt) {
         case 0x11: bump(kpitch_,  0.55f); break;  // cursor down
         case 'Q': case 'q': bump(kroll_, -0.55f); break;
         case 'E': case 'e': bump(kroll_,  0.55f); break;
-        case 'W': case 'w': bump(kthrust_,  0.7f); break;
-        case 'S': case 's': bump(kthrust_, -0.7f); break;   // brake / reverse
+        // Taking the throttle by key hands flying back to the keyboard, so the
+        // touch brake stops fighting it.
+        case 'W': case 'w': bump(kthrust_,  0.7f); touchThrottle_ = false; break;
+        case 'S': case 's': bump(kthrust_, -0.7f); touchThrottle_ = false; break;
         case 'A': case 'a': case ' ': kA_ = true; break;    // pick / launch
         case 'Y': case 'y': kY_ = true; break;              // orbit lines
         case 'B': case 'b': kB_ = true; break;              // leave the surface
@@ -112,7 +117,7 @@ void Outer_Pixels::pollKeys(float dt) {
 // Fold pad, touch and keyboard into one set of axes. The two modes steer
 // differently enough to need their own mapping: in space the stick pitches the
 // nose, on a surface it climbs.
-Controls Outer_Pixels::readInput(const core::Input& in, bool surfaceMode) {
+Controls Outer_Pixels::readInput(const core::Input& in, float dt, bool surfaceMode) {
     Controls c;
     bool aBtn = false, yBtn = false;
 
@@ -136,16 +141,24 @@ Controls Outer_Pixels::readInput(const core::Input& in, bool surfaceMode) {
         c.thrust += kthrust_;
         c.leave   = kB_;
     } else {
-        if (in.pressed) {
-            if (in.x > W - 110 && in.y > H - 110) c.thrust = 1.0f;
-            else {
-                c.yaw   = (in.x - in.startX) / 120.0f;
-                c.pitch = (in.y - in.startY) / 120.0f;
-            }
-            aBtn = (in.x < 110 && in.y > H - 110);
+        // A held finger steers by how far it has dragged and is the throttle at
+        // the same time; lifting it brakes. The bottom-left corner stays the A
+        // button, so tapping to pick a planet does not also accelerate.
+        const bool aCorner = in.pressed && in.x < 110 && in.y > H - 110;
+        if (in.pressed && !aCorner) {
+            c.yaw   = (in.x - in.startX) / 120.0f;
+            c.pitch = (in.y - in.startY) / 120.0f;
+            touchThrust_ += dt / TOUCH_RAMP_S;
+            if (touchThrust_ > 1) touchThrust_ = 1;
+            touchThrottle_ = true;
+        } else if (touchThrottle_) {
+            touchThrust_ = 0;
+            c.brake = 1.0f;
         }
+        aBtn = aCorner;
+
         c.yaw += kyaw_; c.pitch += kpitch_; c.roll += kroll_;
-        c.thrust += kthrust_;
+        c.thrust += touchThrust_ + kthrust_;
         if (c.thrust > 1) c.thrust = 1; else if (c.thrust < -1) c.thrust = -1;
         aBtn = aBtn || kA_;
         yBtn = yBtn || kY_;
@@ -168,7 +181,7 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
     if (diving_) { diveT_ += dt; if (diveT_ >= outer::DIVE_TIME) diving_ = false; }
 
     if (flyingOver_ >= 0) {
-        const Controls c = readInput(in, true);
+        const Controls c = readInput(in, dt, true);
         if (!surface_.update(c, dt, terrain_)) {
             // Climbing out: pop the ship above the planet and punch back up
             // through the cloud layer.
@@ -182,7 +195,7 @@ void Outer_Pixels::update(const core::Input& in, float dt) {
     t_ += dt;
     outer::update(t_);
 
-    const Controls c = readInput(in, false);
+    const Controls c = readInput(in, dt, false);
     if (c.orbits) showOrbits_ = !showOrbits_;
     ship_.step(c, dt, t_);
 
@@ -212,7 +225,7 @@ void Outer_Pixels::render(board::gfx::Surface& s) {
 
     if (flyingOver_ >= 0) {
         const outer::Body& planet = outer::BODIES[flyingOver_];
-        surface_.render(s, terrain_, planet, pad);
+        surface_.render(s, terrain_, planet);
         if (diving_) outer::drawClouds(s, planet.atmo, diveT_);
         return;
     }

@@ -11,12 +11,17 @@
 //
 // Controls (Xbox pad): left stick = steer, RT = thrust, LT = brake,
 // A = pick the planet under the crosshair (or launch when landed),
-// Y = toggle orbit lines, right stick = roll. Without a pad: drag to steer,
-// corners thrust/launch — or type: arrow keys steer, Q/E roll, W/S thrust
-// and brake, A picks/launches, Y orbits, B leaves a surface. Keys arrive
-// from the serial console or a BLE keyboard; each press is a decaying
-// impulse, so holding a key (auto-repeat) flies smoothly. The controller
-// is searched for automatically.
+// Y = toggle orbit lines, right stick = roll.
+//
+// By touch: hold a finger anywhere and drag to steer — holding is also the
+// throttle, winding thrust up over about a second, and lifting the finger
+// brakes the ship to a standstill. The bottom-left corner is A.
+//
+// Or type: arrow keys steer, Q/E roll, W/S thrust and brake, A picks/launches,
+// Y orbits, B leaves a surface. Keys arrive from the serial console or a BLE
+// keyboard; each press is a decaying impulse, so holding a key (auto-repeat)
+// flies smoothly. Taking the throttle by key disarms the touch brake, so the
+// two schemes do not fight. The controller is searched for automatically.
 #pragma once
 
 #include "core/app.h"
@@ -50,8 +55,15 @@ private:
     bool  showOrbits_ = false;
 
     // Build the Controls for this frame out of pad, touch and keyboard.
-    outer::Controls readInput(const core::Input& in, bool surfaceMode);
+    outer::Controls readInput(const core::Input& in, float dt, bool surfaceMode);
     bool  prevA_ = false, prevY_ = false;
+
+    // Touch throttle: a finger held anywhere but the A corner winds thrust up
+    // over about a second, and lifting it brakes the ship to a standstill.
+    // Armed only once a finger has actually driven it, so flying on the keys
+    // keeps its old coast-and-drift feel instead of stopping dead.
+    float touchThrust_   = 0;
+    bool  touchThrottle_ = false;
 
     // Keyboard fallback while no pad is connected: key presses become impulses
     // on a virtual stick that decay over a fraction of a second, because a

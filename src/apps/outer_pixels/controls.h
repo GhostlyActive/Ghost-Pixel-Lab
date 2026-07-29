@@ -10,7 +10,12 @@ struct Controls {
     float yaw    = 0;   // -1..1, right positive
     float pitch  = 0;   // -1..1, down positive (screen sense)
     float roll   = 0;   // -1..1
-    float thrust = 0;   // -1..1, negative brakes
+    float thrust = 0;   // -1..1, negative reverses along the forward axis
+
+    // 0..1, damps the velocity itself rather than pushing against it, so the
+    // ship stops instead of drifting sideways. The touch throttle raises this
+    // when the finger lifts; a pad brakes with LT through `thrust` instead.
+    float brake  = 0;
 
     // Edge-triggered by the shell: true only on the frame the button goes down.
     bool pick   = false;   // A: target the body under the crosshair, or launch

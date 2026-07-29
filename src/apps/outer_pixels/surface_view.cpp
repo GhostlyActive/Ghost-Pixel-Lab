@@ -45,7 +45,7 @@ bool SurfaceView::update(const Controls& c, float dt, const Terrain& terrain) {
 }
 
 void SurfaceView::render(Surface& s, const Terrain& terrain,
-                         const Body& planet, bool padConnected) const {
+                         const Body& planet) const {
     const uint16_t sky = planet.atmo;
     s.clear(sky);
 
@@ -95,9 +95,6 @@ void SurfaceView::render(Surface& s, const Terrain& terrain,
     char hud[40];
     snprintf(hud, sizeof(hud), "SURFACE %s  alt %.0f", planet.name, alt_);
     s.text((W - s.textWidth(hud, 2)) / 2, 8, hud, 0xFFFF, 2);
-    s.text(8, H - 16, padConnected ? "climb to leave   B exit"
-                                   : "drag or arrows to fly   B leave",
-           0x8410, 1);
 }
 
 } // namespace apps::outer

@@ -73,6 +73,12 @@ ship between orbiting planets with the Xbox pad; drop low and it switches to a
 Comanche-style **voxel terrain** you fly through — procedural, generated in the
 background so it's seamless.
 
+Without a pad, hold a finger on the screen and drag to steer: holding is also
+the throttle, and lifting the finger brakes the ship to a stop. The bottom-left
+corner picks the planet under the crosshair, or launches again once landed. A
+keyboard works too — arrows steer, `Q`/`E` roll, `W`/`S` thrust and brake,
+`A` picks, `Y` toggles the orbit lines, `B` leaves a surface.
+
 ## Build & flash
 
 Requires [PlatformIO](https://platformio.org/).

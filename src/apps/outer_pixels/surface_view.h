@@ -27,7 +27,7 @@ public:
     bool update(const Controls& c, float dt, const Terrain& terrain);
 
     void render(board::gfx::Surface& s, const Terrain& terrain,
-                const Body& planet, bool padConnected) const;
+                const Body& planet) const;
 
     [[nodiscard]] float altitude() const { return alt_; }
 

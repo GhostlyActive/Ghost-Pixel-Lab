@@ -221,6 +221,28 @@ int main() {
               ship.landedOn == -1 && ship.vx > 0,
               "landedOn=" + std::to_string(ship.landedOn) + " vx=" + std::to_string(ship.vx));
 
+        // The touch throttle's release: brake damps the velocity itself, so the
+        // ship stops rather than drifting on sideways. Far from any body, where
+        // gravity cannot muddy the result.
+        ship.reset();
+        ship.x = 0; ship.y = 90000; ship.z = 0;
+        ship.vx = 60; ship.vy = 0; ship.vz = -40;      // moving across its own facing
+        Controls brake; brake.brake = 1.0f;
+        const float fast = ship.speed();
+        for (int i = 0; i < 90; ++i) ship.step(brake, 0.016f, 0.0f);   // ~1.4 s
+        check("a full brake stops the ship within ~1.4 s",
+              fast > 50 && ship.speed() < fast * 0.10f,
+              std::to_string(fast) + " -> " + std::to_string(ship.speed()));
+
+        // Coasting must stay coasting: without brake the same drift barely
+        // decays, which is what keeps orbits and keyboard flying intact.
+        ship.reset();
+        ship.x = 0; ship.y = 90000; ship.z = 0;
+        ship.vx = 60; ship.vy = 0; ship.vz = -40;
+        for (int i = 0; i < 90; ++i) ship.step(drift, 0.016f, 0.0f);
+        check("without brake the ship keeps its speed", ship.speed() > fast * 0.7f,
+              std::to_string(fast) + " -> " + std::to_string(ship.speed()));
+
         // The nearest landable body skips the sun, the comets and the specks.
         update(0.0f);
         ship.reset();
@@ -322,7 +344,7 @@ int main() {
         check("the camera never sinks below the ground", aboveGround);
 
         std::fill(g_buf.begin(), g_buf.end(), uint16_t(0xDEAD));
-        view.render(g_surf, terrain, BODIES[2], true);
+        view.render(g_surf, terrain, BODIES[2]);
         check("the surface view paints the frame", nonBackgroundPixels(0xDEAD) > 10000);
 
         // Climbing hard must eventually hand control back to space mode.

@@ -604,10 +604,13 @@ number of programs — and can format the card.
 
 ## 7. Commands and errors at a glance
 
-**Statements:** `SAVE` `LOAD` `DIRECTORY` `SCRATCH` `PRINT` `?` `LET` `IF…THEN`
-`FOR…TO…STEP` `NEXT` `GOTO` `GOSUB` `RETURN` `ON…GOTO/GOSUB` `INPUT` `GET`
-`DIM` `DATA` `READ` `RESTORE` `POKE` `DEF FN` `REM` `END` `STOP` `CONT` `RUN`
-`LIST` `NEW` `CLR`.
+**Statements:** `SAVE` `LOAD` `VERIFY` `DIRECTORY` `SCRATCH` `PRINT` `?` `LET`
+`IF…THEN` `FOR…TO…STEP` `NEXT` `GOTO` `GOSUB` `RETURN` `ON…GOTO/GOSUB` `INPUT`
+`GET` `DIM` `DATA` `READ` `RESTORE` `POKE` `WAIT` `DEF FN` `REM` `END` `STOP`
+`CONT` `RUN` `LIST` `NEW` `CLR`.
+
+**File I/O:** `OPEN` `CLOSE` `PRINT#` `INPUT#` `GET#` `CMD` — see *Data files*
+in section 5.
 
 **Error messages** (original wording): `?SYNTAX ERROR` · `?DIVISION BY ZERO
 ERROR` · `?UNDEF'D STATEMENT ERROR` (unknown line number) · `?NEXT WITHOUT FOR

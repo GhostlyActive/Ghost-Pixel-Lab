@@ -12,6 +12,7 @@ constexpr float YAWRATE    = 1.6f;
 constexpr float PITCHRATE  = 1.4f;
 constexpr float ROLLRATE   = 1.8f;
 constexpr float DRAG       = 0.15f;
+constexpr float BRAKE_DRAG = 2.2f;      // full brake: ~95% of the speed gone in 1.4 s
 constexpr float GRAV       = 1.0f;
 constexpr float LAND_SPEED = 20.0f;     // touchdown limit, relative to the planet
 constexpr float LAUNCH_V   = 26.0f;
@@ -94,7 +95,7 @@ int Ship::bodyUnderCrosshair() const {
 // Gravity from every body at once, plus thrust along the forward axis. The
 // drag term is not physical — it just keeps the ship from accumulating speed
 // forever, which makes the system flyable by hand.
-void Ship::integrate(float thrust, float dt) {
+void Ship::integrate(float thrust, float brake, float dt) {
     const float fx = fwd[0], fy = fwd[1], fz = fwd[2];
     float ax = fx * thrust * THRUST, ay = fy * thrust * THRUST, az = fz * thrust * THRUST;
 
@@ -107,7 +108,8 @@ void Ship::integrate(float thrust, float dt) {
     }
 
     vx += ax * dt; vy += ay * dt; vz += az * dt;
-    const float damp = 1.0f - DRAG * dt;
+    float damp = 1.0f - (DRAG + BRAKE_DRAG * brake) * dt;
+    if (damp < 0) damp = 0;              // a long frame must not reverse the velocity
     vx *= damp; vy *= damp; vz *= damp;
     x += vx * dt; y += vy * dt; z += vz * dt;
 }
@@ -175,7 +177,7 @@ void Ship::step(const Controls& c, float dt, float t) {
         if (hit >= 0) target = hit;
     }
 
-    integrate(c.thrust, dt);
+    integrate(c.thrust, c.brake, dt);
     resolveContact(t);
 }
 

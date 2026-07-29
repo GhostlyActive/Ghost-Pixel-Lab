@@ -279,19 +279,17 @@ void SpaceView::render(Surface& s, const Ship& ship,
     snprintf(spd, sizeof(spd), "spd %.0f", speed);
     s.text((W - s.textWidth(spd, 2)) / 2, 8, spd, 0x8410, 2);
 
-    // One context hint at a time, most urgent first.
+    // One context hint at a time, most urgent first. These are about what the
+    // ship is doing, not how to fly it — a permanent control legend belongs in
+    // the manual, not on top of the game.
     if (ship.landedOn >= 0) {
         const char* m = padConnected ? "LANDED  -  A to launch"
-                                     : "LANDED  -  corner or A to launch";
+                                     : "LANDED  -  tap to launch";
         s.text((W - s.textWidth(m, 2)) / 2, H - 56, m, 0x07E0, 2);
-    } else if (!padConnected) {
-        const char* m = "no pad - keys: arrows+Q/E fly  W/S thrust  A pick  Y orbits";
-        s.text((W - s.textWidth(m, 1)) / 2, H - 52, m, 0x8410, 1);
     } else if (near >= 0 && nd < 25.0f) {
-        const char* m = (speed < LAND_SPEED + 8) ? "approach: slow to land"
-                                                 : "too fast - brake (LT)";
-        s.text((W - s.textWidth(m, 1)) / 2, H - 52, m,
-               speed < LAND_SPEED + 8 ? 0x07E0 : 0xFD20, 1);
+        const bool slow = speed < LAND_SPEED + 8;
+        const char* m = slow ? "approach: slow to land" : "too fast - brake";
+        s.text((W - s.textWidth(m, 1)) / 2, H - 52, m, slow ? 0x07E0 : 0xFD20, 1);
     }
 
     if (ship.target >= 0) {

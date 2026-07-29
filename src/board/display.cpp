@@ -14,7 +14,13 @@ namespace board::display {
 namespace {
 
 constexpr size_t FB_BYTES    = size_t(WIDTH) * HEIGHT * sizeof(uint16_t);
-constexpr size_t CHUNK_BYTES = 16 * 1024;  // per SPI transaction
+// Per SPI transaction. The framebuffer lives in PSRAM, so the driver copies
+// each chunk through an internal DMA bounce buffer it allocates per transfer.
+// 4 KB rather than 16 KB because that allocation has to succeed against a heap
+// that BLE and the audio I2S buffers have already fragmented: entering Outer
+// Pixels after a sound app left the largest free DMA block at ~14 KB, and every
+// 16 KB request failed for as long as the app was open.
+constexpr size_t CHUNK_BYTES = 4 * 1024;
 constexpr int    QUEUE_DEPTH = 4;
 
 Arduino_DataBus* s_bus   = nullptr;
@@ -89,9 +95,23 @@ void streamFrame(const uint8_t* data) {
         t.base.tx_buffer = data + offset;
         t.base.length    = n * 8;
         const esp_err_t err = spi_device_queue_trans(s_pixDev, &t.base, portMAX_DELAY);
-        if (err != ESP_OK) {  // e.g. no memory for the driver's bounce copy
-            Serial.printf("[display] queue_trans failed: %d\n", err);
-            break;
+        if (err != ESP_OK) {
+            // Out of DMA memory for the driver's bounce copy. Give up on the
+            // rest of this frame, but keep looping so the transactions already
+            // in flight are still reaped: leaving results unclaimed desyncs the
+            // driver's queue and every later frame inherits the damage.
+            //
+            // The number that matters is the largest free block, not the total
+            // — this fails on a fragmented heap with plenty free overall.
+            static uint32_t lastWarnMs = 0;
+            if (millis() - lastWarnMs > 1000) {
+                lastWarnMs = millis();
+                Serial.printf("[display] chunk of %u B rejected (%d), largest free DMA block %u B\n",
+                              (unsigned)CHUNK_BYTES, err,
+                              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+            }
+            remaining = 0;
+            continue;
         }
         slot = (slot + 1) % QUEUE_DEPTH;
         ++queued;

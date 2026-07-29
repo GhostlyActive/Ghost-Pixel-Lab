@@ -47,7 +47,7 @@ public:
     [[nodiscard]] float speed() const;
 
 private:
-    void   integrate(float thrust, float dt);
+    void   integrate(float thrust, float brake, float dt);
     void   resolveContact(float t);
     int    bodyUnderCrosshair() const;   // ray-sphere, falling back to a narrow cone
 
