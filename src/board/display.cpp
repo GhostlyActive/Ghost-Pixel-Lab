@@ -23,8 +23,14 @@ constexpr size_t FB_BYTES    = size_t(WIDTH) * HEIGHT * sizeof(uint16_t);
 constexpr size_t CHUNK_BYTES = 4 * 1024;
 constexpr int    QUEUE_DEPTH = 4;
 
+#if BOARD_V2
+using PanelDriver = Arduino_CO5300;
+#else
+using PanelDriver = Arduino_SH8601;
+#endif
+
 Arduino_DataBus* s_bus   = nullptr;
-Arduino_SH8601*  s_panel = nullptr;
+PanelDriver*     s_panel = nullptr;
 
 // Double buffer: the app draws into s_fb[s_drawIdx] while the presenter
 // task streams the other buffer to the panel.
@@ -36,7 +42,7 @@ TaskHandle_t        s_presentTask = nullptr;
 SemaphoreHandle_t   s_presentIdle = nullptr;  // given = transfer finished
 uint16_t* volatile  s_pendingFb   = nullptr;
 
-// Allocate the QSPI bus and the SH8601 panel object at the earliest user
+// Allocate the QSPI bus and the panel object at the earliest user
 // priority. Doing it here, instead of as plain namespace-scope globals or
 // inside begin(), keeps the constructor running before arduino-esp32 has
 // a chance to claim GPIO 11/12 (SPI2 default pins) via its peripheral
@@ -51,12 +57,20 @@ void allocPanelObjects() {
         pins::LCD_CS, pins::LCD_SCK,
         pins::LCD_D0, pins::LCD_D1, pins::LCD_D2, pins::LCD_D3,
         /*is_shared_interface=*/true);
-    s_panel = new Arduino_SH8601(
+#if BOARD_V2
+    // The CO5300's visible 368 columns start at panel RAM column 16. Without
+    // that offset the image is shifted and wraps at the edge.
+    s_panel = new PanelDriver(
+        s_bus, GFX_NOT_DEFINED /* RST */, 0 /* rotation */, WIDTH, HEIGHT,
+        16 /* col_offset1 */, 0, 0, 0);
+#else
+    s_panel = new PanelDriver(
         s_bus, GFX_NOT_DEFINED /* RST */, 0 /* rotation */, WIDTH, HEIGHT);
+#endif
 }
 
 // Stream one framebuffer to the panel, mirroring the wire protocol of
-// Arduino_ESP32QSPI::writeBytes: first chunk cmd 0x32 / addr 0x003C00
+// Arduino_ESP32QSPI::writeBytes (identical on SH8601 and CO5300): first chunk cmd 0x32 / addr 0x003C00
 // (write-continue), remaining chunks raw QIO data. Queued (interrupt)
 // transactions instead of the library's busy-polling: the task sleeps
 // during the wire time and core 0's idle task keeps the watchdog fed.
