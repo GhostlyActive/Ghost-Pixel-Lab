@@ -2,13 +2,21 @@
 // Source: official board schematic.
 #pragma once
 
+// Board revision. V1 = SH8601 panel + FT3168 touch, V2 = CO5300 + CST820.
+// Defaults to V1 so existing builds are unaffected.
+#ifndef BOARD_V2
+#define BOARD_V2 0
+#endif
+
 namespace board::pins {
 
-// I2C bus shared by AXP2101, QMI8658, TCA9554, ES8311, PCF85063, FT3168.
+// I2C bus shared by AXP2101, QMI8658, TCA9554, ES8311, PCF85063, touch.
 inline constexpr int I2C_SDA = 15;
 inline constexpr int I2C_SCL = 14;
 
-// SH8601 1.8" AMOLED, 368x448, driven over QSPI.
+// 1.8" AMOLED, 368x448, driven over QSPI.
+// V1 boards use an SH8601; V2 boards (shipped from ~2026-05) use a CO5300.
+// Build with -DBOARD_V2=1 for the latter; see platformio.ini.
 inline constexpr int LCD_CS    = 12;
 inline constexpr int LCD_SCK   = 11;
 inline constexpr int LCD_D0    = 4;
@@ -19,7 +27,8 @@ inline constexpr int LCD_TE    = 13;     // tearing-effect signal (unused here)
 inline constexpr int LCD_W     = 368;
 inline constexpr int LCD_H     = 448;
 
-// FT3168 capacitive touch controller.
+// Capacitive touch controller: FT3168 on V1, CST820 on V2. Both use the
+// same FocalTech-style register map, so only the address differs.
 inline constexpr int TP_INT    = 21;
 
 // I2S audio (ES8311 mono codec).
@@ -45,6 +54,12 @@ inline constexpr uint8_t AXP2101_ADDR  = 0x34;
 inline constexpr uint8_t QMI8658_ADDR  = 0x6B;
 inline constexpr uint8_t ES8311_ADDR   = 0x18;
 inline constexpr uint8_t PCF85063_ADDR = 0x51;
-inline constexpr uint8_t FT3168_ADDR   = 0x38;
+inline constexpr uint8_t FT3168_ADDR   = 0x38;   // V1
+inline constexpr uint8_t CST820_ADDR   = 0x15;   // V2
+#if BOARD_V2
+inline constexpr uint8_t TOUCH_ADDR    = CST820_ADDR;
+#else
+inline constexpr uint8_t TOUCH_ADDR    = FT3168_ADDR;
+#endif
 
 } // namespace board::pins
